@@ -67,7 +67,7 @@ export async function generateScript(topic: string, tone: string) {
       "detailed prompt for hook image",
       "detailed prompt for body sentence 1 image",
       "detailed prompt for body sentence 2 image",
-      ...,
+      "...",
       "detailed prompt for cta image"
     ]
   }`;
@@ -90,16 +90,34 @@ export async function generateScript(topic: string, tone: string) {
 
 export async function generateImage(prompt: string) {
   try {
-    // Using Pollinations.ai for free, unlimited image generation
-    // It requires no API key and bypasses Gemini quota limits
-    const encodedPrompt = encodeURIComponent(`A high-quality, cinematic, vertical 9:16 aspect ratio image for a video about: ${prompt}. No text in the image, masterpiece, highly detailed`);
-    const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=720&height=1280&nologo=true`;
-    
-    const response = await fetch(url);
-    if (!response.ok) throw new Error('Failed to fetch image');
-    
-    const blob = await response.blob();
-    return blob;
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: {
+        parts: [
+          {
+            text: `A high-quality, cinematic, vertical 9:16 aspect ratio image for a video about: ${prompt}. No text in the image, masterpiece, highly detailed`,
+          },
+        ],
+      },
+      config: {
+        imageConfig: {
+          aspectRatio: "9:16",
+        },
+      },
+    });
+
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData) {
+        const base64EncodeString = part.inlineData.data;
+        const binaryString = atob(base64EncodeString);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return new Blob([bytes], { type: part.inlineData.mimeType || 'image/png' });
+      }
+    }
+    return null;
   } catch (error) {
     console.error("Error generating image:", error);
     return null;
