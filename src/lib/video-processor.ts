@@ -102,7 +102,8 @@ export async function assembleVideo(
 
   return new Promise((resolve, reject) => {
     let command = ffmpeg();
-    const vfSubtitles = `subtitles=${subtitlePath.replace(/\\/g, '/')}`;
+    const escapedSubtitlePath = subtitlePath.replace(/\\/g, '/').replace(/:/g, '\\\\:');
+    const vfSubtitles = `subtitles='${escapedSubtitlePath}'`;
 
     if (videoPath) {
       command = command.input(videoPath);

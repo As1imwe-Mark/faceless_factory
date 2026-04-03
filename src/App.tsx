@@ -63,6 +63,8 @@ export default function App() {
   const [uploadedAudio, setUploadedAudio] = useState<File | null>(null);
   const [isReviewing, setIsReviewing] = useState(false);
   const [reviewData, setReviewData] = useState<any>(null);
+  const [generationProgress, setGenerationProgress] = useState(0);
+  const [estimatedTime, setEstimatedTime] = useState('');
 
   const videoInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -114,6 +116,8 @@ export default function App() {
     if (mode === 'lyrics' && !uploadedAudio && !musicUrl) return;
 
     setIsGenerating(true);
+    setGenerationProgress(0);
+    setEstimatedTime('Calculating...');
     try {
       let script;
       let audioBlob: Blob | null = null;
@@ -129,21 +133,29 @@ export default function App() {
           };
         } else {
           setGenerationStep('Generating Script...');
+          setGenerationProgress(10);
+          setEstimatedTime('~30 seconds remaining');
           script = await generateScript(topic, tone);
         }
         
         if (!script) throw new Error('Failed to generate script');
 
         setGenerationStep('Synthesizing Voice...');
+        setGenerationProgress(25);
+        setEstimatedTime('~45 seconds remaining');
         const fullText = `${script.hook}. ${script.body.join('. ')}. ${script.cta}`;
         audioBlob = await generateSpeech(fullText, voice);
         if (!audioBlob) throw new Error('Failed to generate speech');
 
         setGenerationStep('Generating Word Timestamps...');
+        setGenerationProgress(40);
+        setEstimatedTime('~30 seconds remaining');
         wordTimestamps = await generateWordTimestamps(audioBlob, fullText);
       } else {
         // Lyrics Mode
         setGenerationStep('Preparing Lyrics...');
+        setGenerationProgress(20);
+        setEstimatedTime('~10 seconds remaining');
         script = {
           hook: '',
           body: customScript.split('\n'),
@@ -154,6 +166,8 @@ export default function App() {
         
         if (audioBlob) {
           setGenerationStep('Generating Word Timestamps...');
+          setGenerationProgress(40);
+          setEstimatedTime('~30 seconds remaining');
           wordTimestamps = await generateWordTimestamps(audioBlob, customScript);
         }
       }
@@ -164,10 +178,15 @@ export default function App() {
         const prompts = script.visual_prompts || [];
         for (let i = 0; i < prompts.length; i++) {
           setGenerationStep(`Generating Visual ${i + 1}/${prompts.length}...`);
+          setGenerationProgress(40 + ((i / prompts.length) * 60));
+          setEstimatedTime(`~${(prompts.length - i) * 15} seconds remaining`);
           const imgBlob = await generateImage(prompts[i]);
           if (imgBlob) images.push(imgBlob);
         }
       }
+
+      setGenerationProgress(100);
+      setEstimatedTime('Done!');
 
       setReviewData({
         script,
@@ -185,6 +204,8 @@ export default function App() {
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
+      setGenerationProgress(0);
+      setEstimatedTime('');
     }
   };
 
@@ -761,20 +782,35 @@ export default function App() {
                       type="submit"
                       disabled={isGenerating}
                       className={cn(
-                        "w-full py-4 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-2xl font-bold text-lg hover:shadow-lg hover:shadow-purple-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-3",
-                        isGenerating && "opacity-70 cursor-not-allowed"
+                        "w-full py-4 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-2xl font-bold text-lg hover:shadow-lg hover:shadow-purple-500/20 transition-all active:scale-[0.98] flex flex-col items-center justify-center gap-1 relative overflow-hidden",
+                        isGenerating && "opacity-90 cursor-not-allowed"
                       )}
                     >
-                      {isGenerating ? (
-                        <>
-                          <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                          {generationStep}
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="w-5 h-5" />
-                          Prepare Assets for Review
-                        </>
+                      {isGenerating && (
+                        <div 
+                          className="absolute left-0 top-0 bottom-0 bg-white/20 transition-all duration-500"
+                          style={{ width: `${generationProgress}%` }}
+                        />
+                      )}
+                      
+                      <div className="flex items-center justify-center gap-3 relative z-10">
+                        {isGenerating ? (
+                          <>
+                            <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                            {generationStep}
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-5 h-5" />
+                            Prepare Assets for Review
+                          </>
+                        )}
+                      </div>
+                      
+                      {isGenerating && estimatedTime && (
+                        <div className="text-xs text-white/70 font-medium relative z-10">
+                          {estimatedTime}
+                        </div>
                       )}
                     </button>
                   </div>
