@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { 
   Video, 
@@ -13,12 +13,18 @@ import {
   Type,
   Music,
   Mic,
-  Layout
+  Layout,
+  Youtube,
+  Upload,
+  Search,
+  Check,
+  X,
+  Music2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 
-import { generateScript, generateSpeech, generateImage } from './lib/ai-engine';
+import { generateScript, generateSpeech, generateImage, generateWordTimestamps } from './lib/ai-engine';
 
 interface Job {
   id: string;
@@ -42,6 +48,24 @@ export default function App() {
   const [voice, setVoice] = useState('Kore');
   const [socket, setSocket] = useState<Socket | null>(null);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+
+  // New states
+  const [mode, setMode] = useState<'video' | 'lyrics'>('video');
+  const [videoSource, setVideoSource] = useState<'ai-images' | 'upload' | 'stock' | 'youtube'>('ai-images');
+  const [useCustomScript, setUseCustomScript] = useState(false);
+  const [customScript, setCustomScript] = useState('');
+  const [musicUrl, setMusicUrl] = useState('');
+  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [stockQuery, setStockQuery] = useState('');
+  const [stockVideos, setStockVideos] = useState<any[]>([]);
+  const [selectedStockVideo, setSelectedStockVideo] = useState<any>(null);
+  const [uploadedVideo, setUploadedVideo] = useState<File | null>(null);
+  const [uploadedAudio, setUploadedAudio] = useState<File | null>(null);
+  const [isReviewing, setIsReviewing] = useState(false);
+  const [reviewData, setReviewData] = useState<any>(null);
+
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const newSocket = io();
@@ -70,44 +94,127 @@ export default function App() {
     };
   }, []);
 
-  const handleCreate = async (e: React.FormEvent) => {
+  const searchStock = async () => {
+    if (!stockQuery) return;
+    setGenerationStep('Searching stock videos...');
+    try {
+      const res = await fetch(`/api/stock-videos?query=${encodeURIComponent(stockQuery)}`);
+      const data = await res.json();
+      setStockVideos(data.videos || []);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setGenerationStep('');
+    }
+  };
+
+  const handlePrepare = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!topic || isGenerating) return;
+    if (!topic && !useCustomScript && mode === 'video') return;
+    if (mode === 'lyrics' && !uploadedAudio && !musicUrl) return;
 
     setIsGenerating(true);
     try {
-      // 1. Generate Script
-      setGenerationStep('Generating Script...');
-      const script = await generateScript(topic, tone);
-      if (!script) throw new Error('Failed to generate script');
+      let script;
+      let audioBlob: Blob | null = null;
+      let wordTimestamps = null;
 
-      // 2. Generate Speech
-      setGenerationStep('Synthesizing Voice...');
-      const fullText = `${script.hook}. ${script.body.join('. ')}. ${script.cta}`;
-      const audioBlob = await generateSpeech(fullText, voice);
-      if (!audioBlob) throw new Error('Failed to generate speech');
+      if (mode === 'video') {
+        if (useCustomScript) {
+          script = {
+            hook: customScript.split('\n')[0] || '',
+            body: customScript.split('\n').slice(1, -1),
+            cta: customScript.split('\n').slice(-1)[0] || '',
+            visual_prompts: []
+          };
+        } else {
+          setGenerationStep('Generating Script...');
+          script = await generateScript(topic, tone);
+        }
+        
+        if (!script) throw new Error('Failed to generate script');
 
-      // 3. Generate Visuals
-      setGenerationStep('Generating Visuals...');
-      const imageBlobs: Blob[] = [];
-      const prompts = script.visual_prompts || [];
-      for (let i = 0; i < prompts.length; i++) {
-        setGenerationStep(`Generating Visual ${i + 1}/${prompts.length}...`);
-        const imgBlob = await generateImage(prompts[i]);
-        if (imgBlob) imageBlobs.push(imgBlob);
+        setGenerationStep('Synthesizing Voice...');
+        const fullText = `${script.hook}. ${script.body.join('. ')}. ${script.cta}`;
+        audioBlob = await generateSpeech(fullText, voice);
+        if (!audioBlob) throw new Error('Failed to generate speech');
+
+        setGenerationStep('Generating Word Timestamps...');
+        wordTimestamps = await generateWordTimestamps(audioBlob, fullText);
+      } else {
+        // Lyrics Mode
+        setGenerationStep('Preparing Lyrics...');
+        script = {
+          hook: '',
+          body: customScript.split('\n'),
+          cta: '',
+          visual_prompts: [topic || 'Cinematic background for lyrics video']
+        };
+        audioBlob = uploadedAudio || null;
+        
+        if (audioBlob) {
+          setGenerationStep('Generating Word Timestamps...');
+          wordTimestamps = await generateWordTimestamps(audioBlob, customScript);
+        }
       }
 
-      // 4. Upload to backend for assembly
-      setGenerationStep('Uploading to Factory...');
+      let images: Blob[] = [];
+      if (videoSource === 'ai-images' || mode === 'lyrics') {
+        setGenerationStep('Generating Visuals...');
+        const prompts = script.visual_prompts || [];
+        for (let i = 0; i < prompts.length; i++) {
+          setGenerationStep(`Generating Visual ${i + 1}/${prompts.length}...`);
+          const imgBlob = await generateImage(prompts[i]);
+          if (imgBlob) images.push(imgBlob);
+        }
+      }
+
+      setReviewData({
+        script,
+        audioBlob,
+        images,
+        videoUrl: videoSource === 'youtube' ? youtubeUrl : (videoSource === 'stock' ? selectedStockVideo?.video_files[0]?.link : null),
+        uploadedVideo,
+        wordTimestamps
+      });
+      setIsReviewing(true);
+      setIsCreating(false);
+    } catch (error: any) {
+      console.error(error);
+      alert(error.message);
+    } finally {
+      setIsGenerating(false);
+      setGenerationStep('');
+    }
+  };
+
+  const handleFinalSubmit = async () => {
+    if (!reviewData) return;
+    setIsGenerating(true);
+    setGenerationStep('Starting Assembly...');
+    
+    try {
       const formData = new FormData();
-      formData.append('audio', audioBlob, 'narration.mp3');
-      imageBlobs.forEach((blob, i) => {
+      if (reviewData.audioBlob) {
+        formData.append('audio', reviewData.audioBlob, 'narration.mp3');
+      }
+      reviewData.images.forEach((blob: Blob, i: number) => {
         formData.append('images', blob, `image_${i}.png`);
       });
-      formData.append('topic', topic);
+      if (reviewData.uploadedVideo) {
+        formData.append('video', reviewData.uploadedVideo);
+      }
+      if (reviewData.videoUrl) {
+        formData.append('videoUrl', reviewData.videoUrl);
+      }
+      formData.append('topic', topic || 'Custom Script');
       formData.append('voice', voice);
       formData.append('tone', tone);
-      formData.append('script', JSON.stringify(script));
+      formData.append('script', JSON.stringify(reviewData.script));
+      formData.append('musicUrl', musicUrl);
+      if (reviewData.wordTimestamps) {
+        formData.append('wordTimestamps', JSON.stringify(reviewData.wordTimestamps));
+      }
 
       const res = await fetch('/api/assemble', {
         method: 'POST',
@@ -115,15 +222,21 @@ export default function App() {
       });
 
       if (res.ok) {
+        setIsReviewing(false);
+        setReviewData(null);
         setTopic('');
-        setIsCreating(false);
+        setCustomScript('');
+        setMusicUrl('');
+        setYoutubeUrl('');
+        setSelectedStockVideo(null);
+        setUploadedVideo(null);
+        setUploadedAudio(null);
       } else {
         const data = await res.json();
         throw new Error(data.error || 'Failed to start assembly');
       }
     } catch (error: any) {
-      console.error("Generation error:", error);
-      alert(`Error: ${error.message}`);
+      alert(error.message);
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
@@ -143,16 +256,17 @@ export default function App() {
               Faceless Factory
             </h1>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4">
             <button className="p-2 hover:bg-white/5 rounded-lg transition-colors text-white/60 hover:text-white">
               <Settings className="w-5 h-5" />
             </button>
             <button 
               onClick={() => setIsCreating(true)}
-              className="px-4 py-2 bg-white text-black rounded-lg font-medium hover:bg-white/90 transition-all active:scale-95 flex items-center gap-2"
+              className="px-3 sm:px-4 py-2 bg-white text-black rounded-lg font-medium hover:bg-white/90 transition-all active:scale-95 flex items-center gap-2"
             >
               <Plus className="w-4 h-4" />
-              New Video
+              <span className="hidden sm:inline">New Video</span>
+              <span className="sm:hidden">New</span>
             </button>
           </div>
         </div>
@@ -160,11 +274,11 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-6 py-12">
         {/* Hero Section */}
-        <div className="mb-16">
-          <h2 className="text-4xl md:text-5xl font-bold mb-4 tracking-tight">
+        <div className="mb-12 md:mb-16">
+          <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold mb-4 tracking-tight">
             Automate your <span className="text-purple-500">viral content</span>
           </h2>
-          <p className="text-white/40 text-lg max-w-2xl">
+          <p className="text-white/40 text-base sm:text-lg max-w-2xl">
             Generate high-quality short-form videos with AI. From script to final render, 
             everything is handled automatically.
           </p>
@@ -253,7 +367,7 @@ export default function App() {
 
           {/* Right: Inspector */}
           <div className="lg:col-span-1">
-            <div className="sticky top-28 space-y-6">
+            <div className="lg:sticky lg:top-28 space-y-6">
               {selectedJob ? (
                 <motion.div 
                   initial={{ opacity: 0, x: 20 }}
@@ -351,67 +465,296 @@ export default function App() {
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-2xl bg-[#111] border border-white/10 rounded-3xl overflow-hidden shadow-2xl"
+              className="relative w-full max-w-2xl bg-[#111] border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]"
             >
-              <div className="p-8">
-                <div className="flex items-center justify-between mb-8">
-                  <h3 className="text-2xl font-bold">Configure Production</h3>
-                  <button onClick={() => setIsCreating(false)} className="p-2 hover:bg-white/5 rounded-full transition-colors">
-                    <Plus className="w-6 h-6 rotate-45" />
+              <div className="p-6 sm:p-8 border-b border-white/5 flex items-center justify-between">
+                <h3 className="text-xl sm:text-2xl font-bold">Configure Production</h3>
+                <button onClick={() => setIsCreating(false)} className="p-2 hover:bg-white/5 rounded-full transition-colors">
+                  <Plus className="w-6 h-6 rotate-45" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6 sm:p-8">
+                <div className="flex items-center gap-4 p-1 bg-white/5 rounded-xl border border-white/5 mb-8">
+                  <button
+                    type="button"
+                    onClick={() => setMode('video')}
+                    className={cn(
+                      "flex-1 py-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2",
+                      mode === 'video' ? "bg-white text-black shadow-lg" : "text-white/40 hover:text-white"
+                    )}
+                  >
+                    <Video className="w-4 h-4" />
+                    Faceless Video
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMode('lyrics')}
+                    className={cn(
+                      "flex-1 py-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2",
+                      mode === 'lyrics' ? "bg-white text-black shadow-lg" : "text-white/40 hover:text-white"
+                    )}
+                  >
+                    <Music2 className="w-4 h-4" />
+                    Lyrics Video
                   </button>
                 </div>
 
-                <form onSubmit={handleCreate} className="space-y-8">
-                  <div className="space-y-4">
-                    <label className="text-sm font-medium text-white/60 flex items-center gap-2">
-                      <Type className="w-4 h-4" />
-                      Topic or Prompt
-                    </label>
-                    <textarea
-                      autoFocus
-                      value={topic}
-                      onChange={(e) => setTopic(e.target.value)}
-                      placeholder="e.g. The history of Rome in 60 seconds, or 5 facts about space..."
-                      className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 min-h-[120px] focus:outline-none focus:border-purple-500/50 transition-colors resize-none"
-                    />
+                <form onSubmit={handlePrepare} className="space-y-8">
+                  <div className="space-y-6">
+                    {mode === 'video' && (
+                      <div className="flex items-center gap-4 p-1 bg-white/5 rounded-xl border border-white/5">
+                        <button
+                          type="button"
+                          onClick={() => setUseCustomScript(false)}
+                          className={cn(
+                            "flex-1 py-2 rounded-lg text-sm font-medium transition-all",
+                            !useCustomScript ? "bg-white text-black shadow-lg" : "text-white/40 hover:text-white"
+                          )}
+                        >
+                          AI Script
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setUseCustomScript(true)}
+                          className={cn(
+                            "flex-1 py-2 rounded-lg text-sm font-medium transition-all",
+                            useCustomScript ? "bg-white text-black shadow-lg" : "text-white/40 hover:text-white"
+                          )}
+                        >
+                          Custom Script
+                        </button>
+                      </div>
+                    )}
+
+                    {mode === 'lyrics' || useCustomScript ? (
+                      <div className="space-y-4">
+                        <label className="text-sm font-medium text-white/60 flex items-center gap-2">
+                          <Type className="w-4 h-4" />
+                          {mode === 'lyrics' ? 'Song Lyrics' : 'Your Script'}
+                        </label>
+                        <textarea
+                          value={customScript}
+                          onChange={(e) => setCustomScript(e.target.value)}
+                          placeholder={mode === 'lyrics' ? "Paste song lyrics here..." : "Paste your script here. Each line will be a scene..."}
+                          className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 min-h-[150px] focus:outline-none focus:border-purple-500/50 transition-colors resize-none"
+                        />
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <label className="text-sm font-medium text-white/60 flex items-center gap-2">
+                          <Type className="w-4 h-4" />
+                          Topic or Prompt
+                        </label>
+                        <textarea
+                          autoFocus
+                          value={topic}
+                          onChange={(e) => setTopic(e.target.value)}
+                          placeholder="e.g. The history of Rome in 60 seconds, or 5 facts about space..."
+                          className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 min-h-[100px] focus:outline-none focus:border-purple-500/50 transition-colors resize-none"
+                        />
+                      </div>
+                    )}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-6">
-                    <div className="space-y-4">
+                  {mode === 'lyrics' && (
+                    <div className="space-y-6">
                       <label className="text-sm font-medium text-white/60 flex items-center gap-2">
-                        <Mic className="w-4 h-4" />
-                        Narrator Voice
+                        <Music className="w-4 h-4" />
+                        Song Source
                       </label>
-                      <select 
-                        value={voice}
-                        onChange={(e) => setVoice(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-xl p-3 focus:outline-none focus:border-purple-500/50 appearance-none"
+                      <div 
+                        onClick={() => audioInputRef.current?.click()}
+                        className="p-8 border-2 border-dashed border-white/10 rounded-2xl text-center cursor-pointer hover:border-purple-500/50 transition-all"
                       >
-                        <option value="Kore">Kore (Female, Warm)</option>
-                        <option value="Puck">Puck (Male, Energetic)</option>
-                        <option value="Charon">Charon (Male, Deep)</option>
-                        <option value="Fenrir">Fenrir (Male, Bold)</option>
-                        <option value="Zephyr">Zephyr (Male, Soft)</option>
-                      </select>
+                        <input 
+                          type="file" 
+                          ref={audioInputRef} 
+                          className="hidden" 
+                          accept="audio/*" 
+                          onChange={(e) => setUploadedAudio(e.target.files?.[0] || null)}
+                        />
+                        {uploadedAudio ? (
+                          <div className="flex items-center justify-center gap-2 text-purple-400">
+                            <CheckCircle2 className="w-5 h-5" />
+                            {uploadedAudio.name}
+                          </div>
+                        ) : (
+                          <div className="text-white/40">
+                            <Upload className="w-8 h-8 mx-auto mb-2" />
+                            <p>Click to upload song file</p>
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-center text-white/20 text-xs">OR</div>
+                      <input 
+                        type="text"
+                        value={musicUrl}
+                        onChange={(e) => setMusicUrl(e.target.value)}
+                        placeholder="Direct Song URL..."
+                        className="w-full bg-white/5 border border-white/10 rounded-xl p-3 focus:outline-none focus:border-purple-500/50"
+                      />
                     </div>
+                  )}
+
+                  {mode === 'video' && (
+                    <div className="space-y-6">
+                      <label className="text-sm font-medium text-white/60 flex items-center gap-2">
+                        <Layout className="w-4 h-4" />
+                        Visual Source
+                      </label>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+                        {[
+                          { id: 'ai-images', label: 'AI Images', icon: Sparkles },
+                          { id: 'upload', label: 'Upload', icon: Upload },
+                          { id: 'stock', label: 'Stock', icon: Search },
+                          { id: 'youtube', label: 'YouTube', icon: Youtube },
+                        ].map((source) => (
+                          <button
+                            key={source.id}
+                            type="button"
+                            onClick={() => setVideoSource(source.id as any)}
+                            className={cn(
+                              "flex flex-col items-center gap-2 p-4 rounded-2xl border transition-all",
+                              videoSource === source.id 
+                                ? "bg-purple-500/10 border-purple-500 text-purple-400" 
+                                : "bg-white/5 border-white/5 text-white/40 hover:border-white/20 hover:text-white"
+                            )}
+                          >
+                            <source.icon className="w-5 h-5" />
+                            <span className="text-[10px] font-bold uppercase tracking-wider">{source.label}</span>
+                          </button>
+                        ))}
+                      </div>
+
+                      {videoSource === 'upload' && (
+                        <div 
+                          onClick={() => videoInputRef.current?.click()}
+                          className="p-8 border-2 border-dashed border-white/10 rounded-2xl text-center cursor-pointer hover:border-purple-500/50 transition-all"
+                        >
+                          <input 
+                            type="file" 
+                            ref={videoInputRef} 
+                            className="hidden" 
+                            accept="video/*" 
+                            onChange={(e) => setUploadedVideo(e.target.files?.[0] || null)}
+                          />
+                          {uploadedVideo ? (
+                            <div className="flex items-center justify-center gap-2 text-purple-400">
+                              <CheckCircle2 className="w-5 h-5" />
+                              {uploadedVideo.name}
+                            </div>
+                          ) : (
+                            <div className="text-white/40">
+                              <Upload className="w-8 h-8 mx-auto mb-2" />
+                              <p>Click to upload background video</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {videoSource === 'stock' && (
+                        <div className="space-y-4">
+                          <div className="flex gap-2">
+                            <input 
+                              type="text"
+                              value={stockQuery}
+                              onChange={(e) => setStockQuery(e.target.value)}
+                              placeholder="Search Pexels..."
+                              className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2 focus:outline-none focus:border-purple-500/50"
+                            />
+                            <button 
+                              type="button"
+                              onClick={searchStock}
+                              className="p-2 bg-white text-black rounded-xl hover:bg-white/90"
+                            >
+                              <Search className="w-5 h-5" />
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 max-h-[150px] overflow-y-auto p-2 bg-black/20 rounded-xl">
+                            {stockVideos.map((v) => (
+                              <div 
+                                key={v.id}
+                                onClick={() => setSelectedStockVideo(v)}
+                                className={cn(
+                                  "aspect-[9/16] rounded-lg overflow-hidden cursor-pointer border-2 transition-all",
+                                  selectedStockVideo?.id === v.id ? "border-purple-500" : "border-transparent"
+                                )}
+                              >
+                                <img src={v.image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {videoSource === 'youtube' && (
+                        <div className="space-y-4">
+                          <div className="relative">
+                            <Youtube className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-red-500" />
+                            <input 
+                              type="text"
+                              value={youtubeUrl}
+                              onChange={(e) => setYoutubeUrl(e.target.value)}
+                              placeholder="YouTube Video URL..."
+                              className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-4 py-3 focus:outline-none focus:border-purple-500/50"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {mode === 'video' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                      <div className="space-y-4">
+                        <label className="text-sm font-medium text-white/60 flex items-center gap-2">
+                          <Mic className="w-4 h-4" />
+                          Narrator Voice
+                        </label>
+                        <select 
+                          value={voice}
+                          onChange={(e) => setVoice(e.target.value)}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl p-3 focus:outline-none focus:border-purple-500/50 appearance-none"
+                        >
+                          <option value="Kore">Kore (Female, Warm)</option>
+                          <option value="Puck">Puck (Male, Energetic)</option>
+                          <option value="Charon">Charon (Male, Deep)</option>
+                          <option value="Fenrir">Fenrir (Male, Bold)</option>
+                          <option value="Zephyr">Zephyr (Male, Soft)</option>
+                        </select>
+                      </div>
+                      <div className="space-y-4">
+                        <label className="text-sm font-medium text-white/60 flex items-center gap-2">
+                          <Music className="w-4 h-4" />
+                          Background Music
+                        </label>
+                        <input 
+                          type="text"
+                          value={musicUrl}
+                          onChange={(e) => setMusicUrl(e.target.value)}
+                          placeholder="Direct Audio URL (optional)..."
+                          className="w-full bg-white/5 border border-white/10 rounded-xl p-3 focus:outline-none focus:border-purple-500/50"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {mode === 'lyrics' && (
                     <div className="space-y-4">
                       <label className="text-sm font-medium text-white/60 flex items-center gap-2">
                         <Sparkles className="w-4 h-4" />
-                        Content Tone
+                        Background Mood/Topic
                       </label>
-                      <select 
-                        value={tone}
-                        onChange={(e) => setTone(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-xl p-3 focus:outline-none focus:border-purple-500/50 appearance-none"
-                      >
-                        <option value="inspiring">Inspiring</option>
-                        <option value="shocking">Shocking</option>
-                        <option value="educational">Educational</option>
-                        <option value="funny">Funny</option>
-                        <option value="sad">Sad</option>
-                      </select>
+                      <input 
+                        type="text"
+                        value={topic}
+                        onChange={(e) => setTopic(e.target.value)}
+                        placeholder="e.g. A lonely rainy night in Tokyo, or a vibrant sunset..."
+                        className="w-full bg-white/5 border border-white/10 rounded-xl p-3 focus:outline-none focus:border-purple-500/50"
+                      />
                     </div>
-                  </div>
+                  )}
 
                   <div className="pt-4">
                     <button 
@@ -430,15 +773,116 @@ export default function App() {
                       ) : (
                         <>
                           <Sparkles className="w-5 h-5" />
-                          Start Automated Production
+                          Prepare Assets for Review
                         </>
                       )}
                     </button>
-                    <p className="text-center text-white/30 text-xs mt-4">
-                      Estimated generation time: 2-3 minutes
-                    </p>
                   </div>
                 </form>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Review Modal */}
+      <AnimatePresence>
+        {isReviewing && reviewData && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-black/90 backdrop-blur-md"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="relative w-full max-w-4xl bg-[#111] border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]"
+            >
+              <div className="p-6 border-b border-white/5 flex items-center justify-between">
+                <h3 className="text-xl font-bold flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-green-500" />
+                  Review Production Assets
+                </h3>
+                <button onClick={() => setIsReviewing(false)} className="p-2 hover:bg-white/5 rounded-full">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 sm:p-8 grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-12">
+                <div className="space-y-8">
+                  <div>
+                    <label className="text-[10px] uppercase tracking-widest text-white/40 mb-4 block">Script Preview</label>
+                    <div className="space-y-4 bg-white/5 p-4 sm:p-6 rounded-2xl border border-white/5">
+                      <p className="text-purple-400 font-bold italic">"{reviewData.script.hook}"</p>
+                      {reviewData.script.body.map((s: string, i: number) => (
+                        <p key={i} className="text-white/80 text-sm leading-relaxed">{s}</p>
+                      ))}
+                      <p className="text-blue-400 font-bold italic">"{reviewData.script.cta}"</p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] uppercase tracking-widest text-white/40 mb-4 block">Narration Preview</label>
+                    <audio 
+                      src={URL.createObjectURL(reviewData.audioBlob)} 
+                      controls 
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-8">
+                  <div>
+                    <label className="text-[10px] uppercase tracking-widest text-white/40 mb-4 block">Visual Assets</label>
+                    {reviewData.images.length > 0 ? (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                        {reviewData.images.map((blob: Blob, i: number) => (
+                          <div key={i} className="aspect-[9/16] bg-black rounded-xl overflow-hidden border border-white/10">
+                            <img src={URL.createObjectURL(blob)} className="w-full h-full object-cover" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="aspect-video bg-black rounded-2xl overflow-hidden border border-white/10 flex items-center justify-center text-white/20">
+                        {reviewData.uploadedVideo ? (
+                          <video src={URL.createObjectURL(reviewData.uploadedVideo)} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="text-center p-8">
+                            <Video className="w-12 h-12 mx-auto mb-4 opacity-20" />
+                            <p className="text-sm">Remote video will be downloaded during assembly</p>
+                            <p className="text-xs mt-2 opacity-50">{reviewData.videoUrl}</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 sm:p-6 border-t border-white/5 bg-black/50 flex flex-col sm:flex-row gap-4">
+                <button 
+                  onClick={() => setIsReviewing(false)}
+                  className="w-full sm:flex-1 py-4 bg-white/5 text-white rounded-2xl font-bold hover:bg-white/10 transition-all"
+                >
+                  Reject & Edit
+                </button>
+                <button 
+                  onClick={handleFinalSubmit}
+                  disabled={isGenerating}
+                  className="w-full sm:flex-[2] py-4 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-2xl font-bold text-lg hover:shadow-lg hover:shadow-green-500/20 transition-all flex items-center justify-center gap-3"
+                >
+                  {isGenerating ? (
+                    <div className="w-6 h-6 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      <Check className="w-6 h-6" />
+                      Approve & Start Assembly
+                    </>
+                  )}
+                </button>
               </div>
             </motion.div>
           </div>
