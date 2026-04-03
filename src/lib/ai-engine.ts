@@ -1,6 +1,7 @@
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: "AIzaSyAqWxO4Ri9SpUiG-qWCxNtirPOPj8eHO4U" || "" });
+
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 export async function generateWordTimestamps(audioBlob: Blob, text: string) {
   try {
