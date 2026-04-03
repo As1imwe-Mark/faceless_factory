@@ -25,7 +25,12 @@ export function generateSRT(script: any, totalDuration: number) {
   return srt;
 }
 
-export function generateASS(words: { word: string; start: number; end: number }[], totalDuration: number) {
+export function generateASS(words: { word: string; start: number; end: number }[], totalDuration: number, isLyrics: boolean = false) {
+  const fontSize = isLyrics ? 48 : 36;
+  const alignment = isLyrics ? 5 : 2; // 5 is middle center, 2 is bottom center
+  const primaryColor = '&H00FFFFFF'; // White
+  const secondaryColor = '&H0000FFFF'; // Yellow for highlight
+  
   const header = `[Script Info]
 Title: Word Highlighting Subtitles
 ScriptType: v4.00+
@@ -35,7 +40,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,32,&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,0,2,10,10,100,1
+Style: Default,Arial,${fontSize},${primaryColor},${secondaryColor},&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,2,${alignment},10,10,100,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -43,23 +48,34 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
   let events = '';
   
-  const wordsPerLine = 5;
+  // Delay subtitles by 0.2s to sync better if they are "quicker"
+  const offset = 0.2;
+  const wordsPerLine = isLyrics ? 3 : 5;
+
   for (let i = 0; i < words.length; i += wordsPerLine) {
     const lineWords = words.slice(i, i + wordsPerLine);
-    const lineStart = lineWords[0].start;
-    const lineEnd = lineWords[lineWords.length - 1].end;
+    const lineStart = Math.max(0, lineWords[0].start + offset);
+    const lineEnd = Math.min(totalDuration, lineWords[lineWords.length - 1].end + offset);
 
     const formatTime = (seconds: number) => {
-      const date = new Date(0);
-      date.setSeconds(seconds);
-      const ms = Math.floor((seconds % 1) * 100);
-      return date.toISOString().substr(11, 8) + '.' + ms.toString().padStart(2, '0');
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      const cs = Math.floor((seconds % 1) * 100);
+      return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}`;
     };
 
     let lineText = '';
+    if (isLyrics) {
+      // Randomize position for lyrics
+      const x = 360 + (Math.random() - 0.5) * 100;
+      const y = 640 + (Math.random() - 0.5) * 400;
+      lineText += `{\\pos(${Math.floor(x)},${Math.floor(y)})}{\\fad(200,200)}`;
+    }
+
     lineWords.forEach((wordObj) => {
-      const durationMs = Math.floor((wordObj.end - wordObj.start) * 100);
-      lineText += `{\\k${durationMs}}${wordObj.word} `;
+      const durationCs = Math.floor((wordObj.end - wordObj.start) * 100);
+      lineText += `{\\k${durationCs}}${wordObj.word} `;
     });
 
     events += `Dialogue: 0,${formatTime(lineStart)},${formatTime(lineEnd)},Default,,0,0,0,,${lineText.trim()}\n`;
@@ -77,7 +93,8 @@ export async function assembleVideo(
   musicPath: string | null,
   wordTimestamps: { word: string; start: number; end: number }[] | null,
   outputDir: string,
-  onProgress: (progress: number) => void
+  onProgress: (progress: number) => void,
+  isLyrics: boolean = false
 ) {
   const outputPath = path.join(outputDir, `${jobId}.mp4`);
   const subtitlePath = path.join(outputDir, `${jobId}.${wordTimestamps ? 'ass' : 'srt'}`);
@@ -89,7 +106,7 @@ export async function assembleVideo(
   });
 
   if (wordTimestamps) {
-    fs.writeFileSync(subtitlePath, generateASS(wordTimestamps, audioDuration));
+    fs.writeFileSync(subtitlePath, generateASS(wordTimestamps, audioDuration, isLyrics));
   } else {
     fs.writeFileSync(subtitlePath, generateSRT(script, audioDuration));
   }

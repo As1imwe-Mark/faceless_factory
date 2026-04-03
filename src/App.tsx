@@ -260,6 +260,7 @@ export default function App() {
       formData.append('topic', topic || 'Custom Script');
       formData.append('voice', voice);
       formData.append('tone', tone);
+      formData.append('mode', mode);
       formData.append('script', JSON.stringify(reviewData.script));
       formData.append('musicUrl', musicUrl);
       if (reviewData.wordTimestamps) {
@@ -494,7 +495,7 @@ export default function App() {
 
                       {selectedJob.status === 'completed' && (
                         <a 
-                          href={selectedJob.videoUrl} 
+                          href={`/api/download/${selectedJob.id}`} 
                           download 
                           className="w-full py-3 bg-white text-black rounded-xl font-bold hover:bg-white/90 transition-all flex items-center justify-center gap-2"
                         >

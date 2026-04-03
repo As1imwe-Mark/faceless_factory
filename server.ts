@@ -154,12 +154,22 @@ async function startServer() {
     }
   });
 
+  app.get('/api/download/:id', (req, res) => {
+    const { id } = req.params;
+    const filePath = path.join(outputDir, `${id}.mp4`);
+    if (fs.existsSync(filePath)) {
+      res.download(filePath, `production_${id}.mp4`);
+    } else {
+      res.status(404).json({ error: 'File not found' });
+    }
+  });
+
   app.post('/api/assemble', upload.fields([
     { name: 'audio', maxCount: 1 }, 
     { name: 'images', maxCount: 20 },
     { name: 'video', maxCount: 1 }
   ]), async (req, res) => {
-    const { topic, voice, tone, script: scriptJson, musicUrl, videoUrl: remoteVideoUrl, wordTimestamps: wordTimestampsJson } = req.body;
+    const { topic, voice, tone, mode, script: scriptJson, musicUrl, videoUrl: remoteVideoUrl, wordTimestamps: wordTimestampsJson } = req.body;
     const files = req.files as { [fieldname: string]: Express.Multer.File[] };
     const audioFile = files['audio']?.[0];
     const imageFiles = files['images'] || [];
@@ -172,6 +182,7 @@ async function startServer() {
     const script = JSON.parse(scriptJson);
     const wordTimestamps = wordTimestampsJson ? JSON.parse(wordTimestampsJson) : null;
     const jobId = uuidv4();
+    const isLyrics = mode === 'lyrics';
     
     const job: Job = {
       id: jobId,
@@ -238,7 +249,7 @@ async function startServer() {
           job.progress = 70 + (p * 0.25);
           db.prepare('UPDATE jobs SET progress = ? WHERE id = ?').run(job.progress, job.id);
           io.emit('job-update', job);
-        });
+        }, isLyrics);
 
         job.status = 'completed';
         job.progress = 100;
