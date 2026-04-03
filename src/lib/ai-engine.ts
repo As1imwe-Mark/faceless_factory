@@ -1,6 +1,5 @@
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 
-
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 export async function generateWordTimestamps(audioBlob: Blob, text: string) {
@@ -26,7 +25,7 @@ export async function generateWordTimestamps(audioBlob: Blob, text: string) {
         {
           parts: [
             { text: prompt },
-            { inlineData: { data: base64Audio, mimeType: "audio/mp3" } }
+            { inlineData: { data: base64Audio, mimeType: audioBlob.type || "audio/wav" } }
           ]
         }
       ],
@@ -143,11 +142,47 @@ export async function generateSpeech(text: string, voice: string = 'Kore') {
     const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
     if (base64Audio) {
       const binaryString = atob(base64Audio);
-      const bytes = new Uint8Array(binaryString.length);
+      const pcmBytes = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+        pcmBytes[i] = binaryString.charCodeAt(i);
       }
-      return new Blob([bytes], { type: 'audio/mp3' });
+
+      // Create WAV header for 24000Hz, 1 channel, 16-bit PCM
+      const sampleRate = 24000;
+      const numChannels = 1;
+      const bitsPerSample = 16;
+      const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+      const blockAlign = numChannels * (bitsPerSample / 8);
+      
+      const header = new ArrayBuffer(44);
+      const view = new DataView(header);
+      
+      const writeString = (offset: number, string: string) => {
+        for (let i = 0; i < string.length; i++) {
+          view.setUint8(offset + i, string.charCodeAt(i));
+        }
+      };
+
+      writeString(0, 'RIFF');
+      view.setUint32(4, 36 + pcmBytes.length, true);
+      writeString(8, 'WAVE');
+      writeString(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, byteRate, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, bitsPerSample, true);
+      writeString(36, 'data');
+      view.setUint32(40, pcmBytes.length, true);
+
+      const wavHeader = new Uint8Array(header);
+      const wavBytes = new Uint8Array(wavHeader.length + pcmBytes.length);
+      wavBytes.set(wavHeader, 0);
+      wavBytes.set(pcmBytes, wavHeader.length);
+
+      return new Blob([wavBytes], { type: 'audio/wav' });
     }
     return null;
   } catch (error) {

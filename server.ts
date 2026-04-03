@@ -1,5 +1,3 @@
-import dotenv from "dotenv";
-dotenv.config();
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -13,8 +11,6 @@ import { createClient } from 'pexels';
 import ytdl from 'ytdl-core';
 import Database from 'better-sqlite3';
 import { generateSRT, assembleVideo, downloadFile } from './src/lib/video-processor.js';
-
-
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

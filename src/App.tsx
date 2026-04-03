@@ -196,7 +196,7 @@ export default function App() {
     try {
       const formData = new FormData();
       if (reviewData.audioBlob) {
-        formData.append('audio', reviewData.audioBlob, 'narration.mp3');
+        formData.append('audio', reviewData.audioBlob, 'narration.wav');
       }
       reviewData.images.forEach((blob: Blob, i: number) => {
         formData.append('images', blob, `image_${i}.png`);
