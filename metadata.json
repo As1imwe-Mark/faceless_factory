@@ -1,0 +1,8 @@
+{
+  "name": "Faceless Video Factory",
+  "description": "Automated viral short-form video generation platform using AI for scripts, narration, and editing.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
