@@ -30,6 +30,8 @@ export async function assembleVideo(
   script: any,
   audioPath: string,
   imagePaths: string[],
+  videoPath: string | null,
+  musicPath: string | null,
   outputDir: string,
   onProgress: (progress: number) => void
 ) {
@@ -50,7 +52,34 @@ export async function assembleVideo(
   return new Promise((resolve, reject) => {
     let command = ffmpeg();
 
-    if (imagePaths.length > 0) {
+    if (videoPath) {
+      // Use provided video
+      command = command.input(videoPath);
+      command = command.input(audioPath);
+      
+      let filterComplex = '[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1[v]';
+      let audioInputs = ['1:a'];
+      
+      if (musicPath) {
+        command = command.input(musicPath);
+        filterComplex += ';[2:a]volume=0.2[bgm];[1:a][bgm]amix=inputs=2:duration=first[aout]';
+        audioInputs = ['[aout]'];
+      }
+
+      command
+        .complexFilter(filterComplex)
+        .outputOptions([
+          '-map [v]',
+          `-map ${musicPath ? '[aout]' : '1:a'}`,
+          '-c:v libx264',
+          '-preset ultrafast',
+          '-crf 28',
+          '-c:a aac',
+          '-shortest',
+          '-pix_fmt yuv420p',
+          `-vf subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2'`
+        ]);
+    } else if (imagePaths.length > 0) {
       // Create a slideshow from images
       const durationPerImage = audioDuration / imagePaths.length;
       
@@ -59,15 +88,23 @@ export async function assembleVideo(
       });
 
       const audioIndex = imagePaths.length;
-      const filterComplex = imagePaths.map((_, i) => `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1[v${i}]`).join(';') + ';' +
+      const musicIndex = musicPath ? audioIndex + 1 : -1;
+      
+      let filterComplex = imagePaths.map((_, i) => `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1[v${i}]`).join(';') + ';' +
                             imagePaths.map((_, i) => `[v${i}]`).join('') + `concat=n=${imagePaths.length}:v=1:a=0[outv]`;
 
+      command = command.input(audioPath);
+      
+      if (musicPath) {
+        command = command.input(musicPath);
+        filterComplex += `;[${musicIndex}:a]volume=0.2[bgm];[${audioIndex}:a][bgm]amix=inputs=2:duration=first[aout]`;
+      }
+
       command
-        .input(audioPath)
         .complexFilter(filterComplex)
         .outputOptions([
           '-map [outv]',
-          `-map ${audioIndex}:a:0`,
+          `-map ${musicPath ? '[aout]' : `${audioIndex}:a:0`}`,
           '-c:v libx264',
           '-preset ultrafast',
           '-crf 28',
@@ -79,17 +116,26 @@ export async function assembleVideo(
     } else {
       // Fallback to sample video
       const backgroundVideoUrl = 'https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4';
+      command = command.input(backgroundVideoUrl);
+      command = command.input(audioPath);
+      
+      let filterComplex = '[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1[v]';
+      
+      if (musicPath) {
+        command = command.input(musicPath);
+        filterComplex += ';[2:a]volume=0.2[bgm];[1:a][bgm]amix=inputs=2:duration=first[aout]';
+      }
+
       command
-        .input(backgroundVideoUrl)
-        .input(audioPath)
+        .complexFilter(filterComplex)
         .outputOptions([
+          '-map [v]',
+          `-map ${musicPath ? '[aout]' : '1:a'}`,
           '-c:v libx264',
           '-preset ultrafast',
           '-crf 28',
           '-c:a aac',
           '-shortest',
-          '-map 0:v:0',
-          '-map 1:a:0',
           '-pix_fmt yuv420p',
           `-vf subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2'`
         ]);
