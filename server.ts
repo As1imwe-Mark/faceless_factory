@@ -11,7 +11,10 @@ import multer from 'multer';
 import { createClient } from 'pexels';
 import ytdl from 'ytdl-core';
 import Database from 'better-sqlite3';
+import dotenv from 'dotenv';
 import { generateSRT, assembleVideo, downloadFile } from './src/lib/video-processor.js';
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
