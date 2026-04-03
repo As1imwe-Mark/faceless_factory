@@ -29,6 +29,7 @@ export async function assembleVideo(
   jobId: string,
   script: any,
   audioPath: string,
+  imagePaths: string[],
   outputDir: string,
   onProgress: (progress: number) => void
 ) {
@@ -38,7 +39,7 @@ export async function assembleVideo(
   // Get audio duration
   const audioDuration = await new Promise<number>((resolve) => {
     ffmpeg.ffprobe(audioPath, (err, metadata) => {
-      resolve(metadata.format.duration || 30);
+      resolve(metadata?.format?.duration || 30);
     });
   });
 
@@ -47,24 +48,54 @@ export async function assembleVideo(
   fs.writeFileSync(srtPath, srtContent);
 
   return new Promise((resolve, reject) => {
-    const backgroundVideoUrl = 'https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4';
-    
-    ffmpeg()
-      .input(backgroundVideoUrl)
-      .input(audioPath)
-      .outputOptions([
-        '-c:v libx264',
-        '-preset ultrafast',
-        '-crf 28',
-        '-c:a aac',
-        '-shortest',
-        '-map 0:v:0',
-        '-map 1:a:0',
-        '-pix_fmt yuv420p',
-        // Burn subtitles - this requires the srt file to be accessible by ffmpeg
-        // Note: filter path must be escaped correctly
-        `-vf subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2'`
-      ])
+    let command = ffmpeg();
+
+    if (imagePaths.length > 0) {
+      // Create a slideshow from images
+      const durationPerImage = audioDuration / imagePaths.length;
+      
+      imagePaths.forEach((img) => {
+        command = command.input(img).inputOptions(['-loop 1', `-t ${durationPerImage}`]);
+      });
+
+      const audioIndex = imagePaths.length;
+      const filterComplex = imagePaths.map((_, i) => `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1[v${i}]`).join(';') + ';' +
+                            imagePaths.map((_, i) => `[v${i}]`).join('') + `concat=n=${imagePaths.length}:v=1:a=0[outv]`;
+
+      command
+        .input(audioPath)
+        .complexFilter(filterComplex)
+        .outputOptions([
+          '-map [outv]',
+          `-map ${audioIndex}:a:0`,
+          '-c:v libx264',
+          '-preset ultrafast',
+          '-crf 28',
+          '-c:a aac',
+          '-shortest',
+          '-pix_fmt yuv420p',
+          `-vf subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2'`
+        ]);
+    } else {
+      // Fallback to sample video
+      const backgroundVideoUrl = 'https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4';
+      command
+        .input(backgroundVideoUrl)
+        .input(audioPath)
+        .outputOptions([
+          '-c:v libx264',
+          '-preset ultrafast',
+          '-crf 28',
+          '-c:a aac',
+          '-shortest',
+          '-map 0:v:0',
+          '-map 1:a:0',
+          '-pix_fmt yuv420p',
+          `-vf subtitles=${srtPath.replace(/\\/g, '/')}:force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2'`
+        ]);
+    }
+
+    command
       .on('progress', (progress) => {
         if (progress.percent) onProgress(Math.round(progress.percent));
       })

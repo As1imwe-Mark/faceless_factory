@@ -18,7 +18,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 
-import { generateScript, generateSpeech } from './lib/ai-engine';
+import { generateScript, generateSpeech, generateImage } from './lib/ai-engine';
 
 interface Job {
   id: string;
@@ -87,10 +87,23 @@ export default function App() {
       const audioBlob = await generateSpeech(fullText, voice);
       if (!audioBlob) throw new Error('Failed to generate speech');
 
-      // 3. Upload to backend for assembly
+      // 3. Generate Visuals
+      setGenerationStep('Generating Visuals...');
+      const imageBlobs: Blob[] = [];
+      const prompts = script.visual_prompts || [];
+      for (let i = 0; i < prompts.length; i++) {
+        setGenerationStep(`Generating Visual ${i + 1}/${prompts.length}...`);
+        const imgBlob = await generateImage(prompts[i]);
+        if (imgBlob) imageBlobs.push(imgBlob);
+      }
+
+      // 4. Upload to backend for assembly
       setGenerationStep('Uploading to Factory...');
       const formData = new FormData();
       formData.append('audio', audioBlob, 'narration.mp3');
+      imageBlobs.forEach((blob, i) => {
+        formData.append('images', blob, `image_${i}.png`);
+      });
       formData.append('topic', topic);
       formData.append('voice', voice);
       formData.append('tone', tone);

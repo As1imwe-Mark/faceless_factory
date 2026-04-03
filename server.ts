@@ -65,9 +65,11 @@ async function startServer() {
     res.json(jobs);
   });
 
-  app.post('/api/assemble', upload.single('audio'), async (req, res) => {
+  app.post('/api/assemble', upload.fields([{ name: 'audio', maxCount: 1 }, { name: 'images', maxCount: 20 }]), async (req, res) => {
     const { topic, voice, tone, script: scriptJson } = req.body;
-    const audioFile = req.file;
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+    const audioFile = files['audio']?.[0];
+    const imageFiles = files['images'] || [];
 
     if (!audioFile || !scriptJson) {
       return res.status(400).json({ error: 'Missing audio file or script data' });
@@ -93,7 +95,8 @@ async function startServer() {
     // Start assembly in background
     (async () => {
       try {
-        await assembleVideo(jobId, script, audioFile.path, outputDir, (p) => {
+        const imagePaths = imageFiles.map(f => f.path);
+        await assembleVideo(jobId, script, audioFile.path, imagePaths, outputDir, (p) => {
           job.progress = 60 + (p * 0.3);
           io.emit('job-update', job);
         });

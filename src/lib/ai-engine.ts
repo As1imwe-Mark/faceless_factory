@@ -12,7 +12,13 @@ export async function generateScript(topic: string, tone: string) {
     "hook": "...",
     "body": ["sentence 1", "sentence 2", ...],
     "cta": "...",
-    "visual_keywords": ["keyword 1", "keyword 2", ...]
+    "visual_prompts": [
+      "detailed prompt for hook image",
+      "detailed prompt for body sentence 1 image",
+      "detailed prompt for body sentence 2 image",
+      ...,
+      "detailed prompt for cta image"
+    ]
   }`;
 
   try {
@@ -27,6 +33,42 @@ export async function generateScript(topic: string, tone: string) {
     return JSON.parse(response.text || "{}");
   } catch (error) {
     console.error("Error generating script:", error);
+    return null;
+  }
+}
+
+export async function generateImage(prompt: string) {
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: {
+        parts: [
+          {
+            text: `A high-quality, cinematic, vertical 9:16 aspect ratio image for a video about: ${prompt}. No text in the image.`,
+          },
+        ],
+      },
+      config: {
+        imageConfig: {
+          aspectRatio: "9:16",
+        },
+      },
+    });
+
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData) {
+        const base64EncodeString = part.inlineData.data;
+        const binaryString = atob(base64EncodeString);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return new Blob([bytes], { type: 'image/png' });
+      }
+    }
+    return null;
+  } catch (error) {
+    console.error("Error generating image:", error);
     return null;
   }
 }
