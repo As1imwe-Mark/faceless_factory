@@ -1,6 +1,6 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const ai = new GoogleGenAI({ apiKey: "AIzaSyAqWxO4Ri9SpUiG-qWCxNtirPOPj8eHO4U" || "" });
 
 export async function generateScript(topic: string, tone: string) {
   const prompt = `Generate a viral short-form video script (TikTok/Reels) about: ${topic}. 
