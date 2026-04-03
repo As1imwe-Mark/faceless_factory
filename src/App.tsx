@@ -158,7 +158,7 @@ export default function App() {
             hook: customScript.split('\n')[0] || '',
             body: customScript.split('\n').slice(1, -1),
             cta: customScript.split('\n').slice(-1)[0] || '',
-            visual_prompts: []
+            visual_prompts: [topic || 'Cinematic background']
           };
         } else {
           setGenerationStep('Generating Script...');

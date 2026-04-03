@@ -97,16 +97,18 @@ export async function assembleVideo(
   return new Promise((resolve, reject) => {
     let command = ffmpeg();
 
+    // Robust path escaping for FFmpeg filtergraph on Windows
     const escapedSubtitlePath = subtitlePath
       .replace(/\\/g, '/')
-      .replace(/:/g, '\\:');
+      .replace(/:/g, '\\:')
+      .replace(/ /g, '\\ ');
 
     const vfSubtitles = `subtitles=${escapedSubtitlePath}`;
 
     if (videoPath) {
       command.input(videoPath).input(audioPath);
 
-      let filterComplex = `[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,${vfSubtitles}[v]`;
+      let filterComplex = `[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,format=yuv420p,${vfSubtitles}[v]`;
 
       if (musicPath) {
         command.input(musicPath);
@@ -139,7 +141,7 @@ export async function assembleVideo(
 
       let filterComplex =
         imagePaths.map((_, i) =>
-          `[${i}:v]scale=1280:2276,zoompan=z='min(zoom+0.0015,1.5)':d=${Math.floor(durationPerImage * 25)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=720x1280,setsar=1[v${i}]`
+          `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,format=yuv420p[v${i}]`
         ).join(';')
         + ';'
         + imagePaths.map((_, i) => `[v${i}]`).join('')
@@ -166,11 +168,28 @@ export async function assembleVideo(
         ]);
 
     } else {
+      // Fallback to a generated black background instead of a remote URL
+      command.input(`color=c=black:s=720x1280:d=${audioDuration}`).inputFormat('lavfi');
       command.input(audioPath);
 
+      let filterComplex = `[0:v]format=yuv420p,${vfSubtitles}[v]`;
+
+      if (musicPath) {
+        command.input(musicPath);
+        filterComplex += `;[2:a]volume=0.2[bgm];[1:a][bgm]amix=inputs=2:duration=first[aout]`;
+      }
+
       command
+        .complexFilter(filterComplex)
         .outputOptions([
-          '-c:a aac'
+          '-map [v]',
+          `-map ${musicPath ? '[aout]' : '1:a'}`,
+          '-c:v libx264',
+          '-preset ultrafast',
+          '-crf 28',
+          '-c:a aac',
+          '-shortest',
+          '-pix_fmt yuv420p'
         ]);
     }
 
