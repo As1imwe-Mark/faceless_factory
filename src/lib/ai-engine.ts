@@ -1,6 +1,57 @@
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, Type } from "@google/genai";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+
+export async function generateWordTimestamps(audioBlob: Blob, text: string) {
+  try {
+    const base64Audio = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64 = (reader.result as string).split(',')[1];
+        resolve(base64);
+      };
+      reader.readAsDataURL(audioBlob);
+    });
+
+    const prompt = `I have an audio file and its transcription. Please provide word-level timestamps for each word in the transcription.
+    Transcription: "${text}"
+    
+    Return a JSON array of objects, each with "word", "start" (seconds), and "end" (seconds).
+    Be as precise as possible.`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [
+        {
+          parts: [
+            { text: prompt },
+            { inlineData: { data: base64Audio, mimeType: "audio/mp3" } }
+          ]
+        }
+      ],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              word: { type: Type.STRING },
+              start: { type: Type.NUMBER },
+              end: { type: Type.NUMBER }
+            },
+            required: ["word", "start", "end"]
+          }
+        }
+      }
+    });
+
+    return JSON.parse(response.text || "[]");
+  } catch (error) {
+    console.error("Error generating word timestamps:", error);
+    return null;
+  }
+}
 
 export async function generateScript(topic: string, tone: string) {
   const prompt = `Generate a viral short-form video script (TikTok/Reels) about: ${topic}. 
