@@ -34,6 +34,18 @@ db.exec(`
   )
 `);
 
+// Add missing columns if they don't exist
+try {
+  db.exec("ALTER TABLE jobs ADD COLUMN mode TEXT");
+} catch (e) {
+  // Column already exists or other error
+}
+try {
+  db.exec("ALTER TABLE jobs ADD COLUMN assets TEXT");
+} catch (e) {
+  // Column already exists or other error
+}
+
 const pexelsClient = createClient(process.env.PEXELS_API_KEY || '');
 
 const storage = multer.diskStorage({
@@ -72,6 +84,23 @@ async function startServer() {
 
   const PORT = 3000;
 
+  // 1. Debug middleware - move to the very top
+  app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    next();
+  });
+
+  // 2. Trailing slash redirect
+  app.use((req, res, next) => {
+    if (req.path.length > 1 && req.path.endsWith('/') && !req.path.startsWith('/socket.io')) {
+      const query = req.url.slice(req.path.length);
+      const safepath = req.path.slice(0, -1).replace(/\/+/g, '/');
+      res.redirect(301, safepath + query);
+    } else {
+      next();
+    }
+  });
+
   // Ensure directories exist
   const uploadsDir = path.join(__dirname, 'uploads');
   const outputDir = path.join(__dirname, 'output');
@@ -79,11 +108,13 @@ async function startServer() {
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
 
   app.use(express.json());
+  
   app.use('/uploads', express.static(uploadsDir));
   app.use('/output', express.static(outputDir));
 
   // API Routes
   app.get('/api/jobs', (req, res) => {
+    console.log('Hit /api/jobs GET');
     const rows = db.prepare('SELECT * FROM jobs ORDER BY createdAt DESC').all();
     const jobs = rows.map((row: any) => ({
       ...row,
@@ -130,17 +161,58 @@ async function startServer() {
       const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as any;
       if (!job) return res.status(404).json({ error: 'Job not found' });
       
+      const assets = JSON.parse(job.assets || '{}');
+      if (!assets.audio && !assets.audioUrl) {
+        return res.status(400).json({ error: 'Cannot retry: original assets are missing' });
+      }
+
       // Reset job status
       db.prepare('UPDATE jobs SET status = ?, progress = ?, error = ? WHERE id = ?').run('pending', 0, null, id);
       
-      const updatedJob = { ...job, status: 'pending', progress: 0, error: null, script: JSON.parse(job.script || '{}') };
+      const updatedJob = { 
+        ...job, 
+        status: 'pending', 
+        progress: 0, 
+        error: null, 
+        script: JSON.parse(job.script || '{}'),
+        assets: assets
+      };
       io.emit('job-update', updatedJob);
       
-      // In a full implementation, we'd re-trigger the assembly here using saved asset paths.
-      // For now, we just reset the status to allow the user to see it's "pending" 
-      // and they can re-submit the assets from the UI if needed, or we can just mark it failed if assets are missing.
-      // Since we don't store asset paths in DB yet, a true retry requires re-uploading.
-      // We will just return success so the UI can handle it.
+      // Re-trigger assembly in background
+      (async () => {
+        try {
+          const jobId = id;
+          const script = updatedJob.script;
+          const audioPath = assets.audio;
+          const imagePaths = assets.images || [];
+          const videoPath = assets.video;
+          const musicPath = assets.music;
+          const wordTimestamps = assets.wordTimestamps;
+          const isLyrics = job.mode === 'lyrics';
+          const sceneVideoPaths = assets.sceneVideos || [];
+
+          if (!fs.existsSync(audioPath)) {
+            throw new Error('Original audio file is no longer available. Please re-upload.');
+          }
+
+          await assembleVideo(jobId, script, audioPath, imagePaths, videoPath, musicPath, wordTimestamps, outputDir, (p) => {
+            const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(id) as any;
+            if (currentJob?.status === 'cancelled') return;
+            const progress = 70 + (p * 0.25);
+            db.prepare('UPDATE jobs SET progress = ? WHERE id = ?').run(progress, id);
+            io.emit('job-update', { ...updatedJob, progress });
+          }, isLyrics, sceneVideoPaths);
+
+          db.prepare('UPDATE jobs SET status = ?, progress = ?, videoUrl = ? WHERE id = ?').run('completed', 100, `/output/${id}.mp4`, id);
+          io.emit('job-update', { ...updatedJob, status: 'completed', progress: 100, videoUrl: `/output/${id}.mp4` });
+        } catch (error: any) {
+          console.error("Retry assembly error:", error);
+          db.prepare('UPDATE jobs SET status = ?, error = ? WHERE id = ?').run('failed', error.message, id);
+          io.emit('job-update', { ...updatedJob, status: 'failed', error: error.message });
+        }
+      })();
+      
       res.json({ success: true, job: updatedJob });
     } catch (error) {
       res.status(500).json({ error: 'Failed to retry job' });
@@ -192,123 +264,170 @@ async function startServer() {
     { name: 'video', maxCount: 1 },
     { name: 'music', maxCount: 1 }
   ]), async (req, res) => {
-    const { topic, voice, tone, mode, script: scriptJson, musicUrl, videoUrl: remoteVideoUrl, wordTimestamps: wordTimestampsJson } = req.body;
-    const files = req.files as { [fieldname: string]: Express.Multer.File[] };
-    const audioFile = files['audio']?.[0];
-    const imageFiles = files['images'] || [];
-    const sceneVideoFiles = files['sceneVideos'] || [];
-    const uploadedVideo = files['video']?.[0];
-    const uploadedMusicFile = files['music']?.[0];
+    try {
+      const { topic, voice, tone, mode, script: scriptJson, musicUrl, audioUrl, videoUrl: remoteVideoUrl, wordTimestamps: wordTimestampsJson } = req.body;
+      const files = (req.files || {}) as { [fieldname: string]: Express.Multer.File[] };
+      const audioFile = files['audio']?.[0];
+      const imageFiles = files['images'] || [];
+      const sceneVideoFiles = files['sceneVideos'] || [];
+      const uploadedVideo = files['video']?.[0];
+      const uploadedMusicFile = files['music']?.[0];
 
-    if (!audioFile || !scriptJson) {
-      return res.status(400).json({ error: 'Missing audio file or script data' });
-    }
-
-    const script = JSON.parse(scriptJson);
-    const wordTimestamps = wordTimestampsJson ? JSON.parse(wordTimestampsJson) : null;
-    const jobId = uuidv4();
-    const isLyrics = mode === 'lyrics';
-    
-    const job: Job = {
-      id: jobId,
-      topic,
-      voice,
-      tone,
-      status: 'Preparing Assets',
-      progress: 50,
-      createdAt: new Date().toISOString(),
-      script,
-    };
-    
-    db.prepare('INSERT INTO jobs (id, topic, voice, tone, status, progress, createdAt, script) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(job.id, job.topic, job.voice, job.tone, job.status, job.progress, job.createdAt, JSON.stringify(job.script));
-    
-    io.emit('job-update', job);
-
-    // Start assembly in background
-    (async () => {
-      try {
-        let finalVideoPath = uploadedVideo?.path || null;
-        let finalMusicPath = uploadedMusicFile?.path || null;
-
-        // Download remote video if provided (YouTube or Stock)
-        if (!finalVideoPath && remoteVideoUrl) {
-          const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
-          if (currentJob?.status === 'cancelled') return;
-
-          job.status = 'Downloading Video';
-          db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run(job.status, job.id);
-          io.emit('job-update', job);
-          
-          const videoExt = remoteVideoUrl.includes('youtube.com') ? '.mp4' : path.extname(remoteVideoUrl.split('?')[0]) || '.mp4';
-          const dest = path.join(uploadsDir, `${uuidv4()}${videoExt}`);
-          
-          if (ytdl.validateURL(remoteVideoUrl)) {
-            await new Promise<void>((resolve, reject) => {
-              ytdl(remoteVideoUrl, { filter: 'audioandvideo' })
-                .pipe(fs.createWriteStream(dest))
-                .on('finish', () => resolve())
-                .on('error', reject);
-            });
-            finalVideoPath = dest;
-          } else {
-            await downloadFile(remoteVideoUrl, dest);
-            finalVideoPath = dest;
-          }
-        }
-
-        // Download music if provided
-        if (!finalMusicPath && musicUrl) {
-          const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
-          if (currentJob?.status === 'cancelled') return;
-
-          job.status = 'Downloading Music';
-          db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run(job.status, job.id);
-          io.emit('job-update', job);
-          const musicDest = path.join(uploadsDir, `${uuidv4()}.mp3`);
-          await downloadFile(musicUrl, musicDest);
-          finalMusicPath = musicDest;
-        }
-
-        const currentJobBeforeAssemble = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
-        if (currentJobBeforeAssemble?.status === 'cancelled') return;
-
-        job.status = 'Assembling Video';
-        job.progress = 70;
-        db.prepare('UPDATE jobs SET status = ?, progress = ? WHERE id = ?').run(job.status, job.progress, job.id);
-        io.emit('job-update', job);
-
-        const imagePaths = imageFiles.map(f => f.path);
-        const sceneVideoPaths = sceneVideoFiles.map(f => f.path);
-        await assembleVideo(jobId, script, audioFile.path, imagePaths, finalVideoPath, finalMusicPath, wordTimestamps, outputDir, (p) => {
-          const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
-          if (currentJob?.status === 'cancelled') return;
-          job.progress = 70 + (p * 0.25);
-          db.prepare('UPDATE jobs SET progress = ? WHERE id = ?').run(job.progress, job.id);
-          io.emit('job-update', job);
-        }, isLyrics, sceneVideoPaths);
-
-        const finalJobCheck = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
-        if (finalJobCheck?.status === 'cancelled') return;
-
-        job.status = 'completed';
-        job.progress = 100;
-        job.videoUrl = `/output/${jobId}.mp4`;
-        db.prepare('UPDATE jobs SET status = ?, progress = ?, videoUrl = ? WHERE id = ?').run(job.status, job.progress, job.videoUrl, job.id);
-        io.emit('job-update', job);
-      } catch (error: any) {
-        const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
-        if (currentJob?.status === 'cancelled') return;
-
-        console.error("Assembly error:", error);
-        job.status = 'failed';
-        job.error = error.message;
-        db.prepare('UPDATE jobs SET status = ?, error = ? WHERE id = ?').run(job.status, job.error, job.id);
-        io.emit('job-update', job);
+      if (!audioFile && !audioUrl && !scriptJson) {
+        return res.status(400).json({ error: 'Missing audio file/URL or script data' });
       }
-    })();
 
-    res.status(202).json(job);
+      const script = scriptJson ? JSON.parse(scriptJson) : {};
+      const wordTimestamps = wordTimestampsJson ? JSON.parse(wordTimestampsJson) : null;
+      const jobId = uuidv4();
+      const isLyrics = mode === 'lyrics';
+      
+      const job: Job = {
+        id: jobId,
+        topic,
+        voice,
+        tone,
+        status: 'Preparing Assets',
+        progress: 50,
+        createdAt: new Date().toISOString(),
+        script,
+      };
+      
+      db.prepare('INSERT INTO jobs (id, topic, voice, tone, mode, status, progress, createdAt, script, assets) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(job.id, job.topic, job.voice, job.tone, mode, job.status, job.progress, job.createdAt, JSON.stringify(job.script), null);
+      
+      io.emit('job-update', job);
+
+      // Start assembly in background
+      (async () => {
+        try {
+          let finalAudioPath = audioFile?.path || null;
+          let finalVideoPath = uploadedVideo?.path || null;
+          let finalMusicPath = uploadedMusicFile?.path || null;
+
+          // Download audio if provided as URL
+          if (!finalAudioPath && audioUrl) {
+            job.status = 'Downloading Audio';
+            db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run(job.status, job.id);
+            io.emit('job-update', job);
+            const audioDest = path.join(uploadsDir, `${uuidv4()}.wav`);
+            await downloadFile(audioUrl, audioDest);
+            finalAudioPath = audioDest;
+          }
+
+          if (!finalAudioPath) {
+            throw new Error('No audio source provided');
+          }
+
+          // Download remote video if provided (YouTube or Stock)
+          if (!finalVideoPath && remoteVideoUrl) {
+            const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
+            if (currentJob?.status === 'cancelled') return;
+
+            job.status = 'Downloading Video';
+            db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run(job.status, job.id);
+            io.emit('job-update', job);
+            
+            const isYoutube = remoteVideoUrl.includes('youtube.com') || remoteVideoUrl.includes('youtu.be');
+            const videoExt = isYoutube ? '.mp4' : path.extname(remoteVideoUrl.split('?')[0]) || '.mp4';
+            const dest = path.join(uploadsDir, `${uuidv4()}${videoExt}`);
+            
+            if (ytdl.validateURL(remoteVideoUrl)) {
+              try {
+                await new Promise<void>((resolve, reject) => {
+                  const stream = ytdl(remoteVideoUrl, { 
+                    filter: 'audioandvideo',
+                    quality: 'highestvideo'
+                  });
+                  
+                  stream.pipe(fs.createWriteStream(dest))
+                    .on('finish', () => resolve())
+                    .on('error', (err) => {
+                      console.error("YTDL Error:", err);
+                      reject(err);
+                    });
+                });
+                finalVideoPath = dest;
+              } catch (ytdlError) {
+                console.warn("YTDL failed, attempting direct download as fallback:", ytdlError);
+                await downloadFile(remoteVideoUrl, dest);
+                finalVideoPath = dest;
+              }
+            } else {
+              await downloadFile(remoteVideoUrl, dest);
+              finalVideoPath = dest;
+            }
+          }
+
+          // Download music if provided
+          if (!finalMusicPath && musicUrl) {
+            const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
+            if (currentJob?.status === 'cancelled') return;
+
+            job.status = 'Downloading Music';
+            db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run(job.status, job.id);
+            io.emit('job-update', job);
+            const musicDest = path.join(uploadsDir, `${uuidv4()}.mp3`);
+            await downloadFile(musicUrl, musicDest);
+            finalMusicPath = musicDest;
+          }
+
+          const currentJobBeforeAssemble = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
+          if (currentJobBeforeAssemble?.status === 'cancelled') return;
+
+          job.status = 'Assembling Video';
+          job.progress = 70;
+          db.prepare('UPDATE jobs SET status = ?, progress = ? WHERE id = ?').run(job.status, job.progress, job.id);
+          io.emit('job-update', job);
+
+          const imagePaths = imageFiles.map(f => f.path);
+          const sceneVideoPaths = sceneVideoFiles.map(f => f.path);
+
+          // Store asset paths for potential retries
+          const assets = {
+            audio: finalAudioPath,
+            audioUrl: audioUrl,
+            images: imagePaths,
+            sceneVideos: sceneVideoPaths,
+            video: finalVideoPath,
+            music: finalMusicPath,
+            wordTimestamps: wordTimestamps
+          };
+          db.prepare('UPDATE jobs SET assets = ? WHERE id = ?').run(JSON.stringify(assets), job.id);
+
+          await assembleVideo(jobId, script, finalAudioPath, imagePaths, finalVideoPath, finalMusicPath, wordTimestamps, outputDir, (p) => {
+            const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
+            if (currentJob?.status === 'cancelled') return;
+            job.progress = 70 + (p * 0.25);
+            db.prepare('UPDATE jobs SET progress = ? WHERE id = ?').run(job.progress, job.id);
+            io.emit('job-update', job);
+          }, isLyrics, sceneVideoPaths);
+
+          const finalJobCheck = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
+          if (finalJobCheck?.status === 'cancelled') return;
+
+          job.status = 'completed';
+          job.progress = 100;
+          job.videoUrl = `/output/${jobId}.mp4`;
+          db.prepare('UPDATE jobs SET status = ?, progress = ?, videoUrl = ? WHERE id = ?').run(job.status, job.progress, job.videoUrl, job.id);
+          io.emit('job-update', job);
+        } catch (error: any) {
+          const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
+          if (currentJob?.status === 'cancelled') return;
+
+          console.error("Assembly error:", error);
+          job.status = 'failed';
+          job.error = error.message;
+          db.prepare('UPDATE jobs SET status = ?, error = ? WHERE id = ?').run(job.status, job.error, job.id);
+          io.emit('job-update', job);
+        }
+      })();
+
+      res.status(202).json(job);
+    } catch (error: any) {
+      console.error("Error in /api/assemble:", error);
+      res.status(500).json({ error: error.message || 'Internal server error' });
+    }
   });
 
   app.post('/api/jobs', (req, res) => {
@@ -316,10 +435,28 @@ async function startServer() {
     res.status(410).json({ error: 'Please use /api/assemble' });
   });
 
+  // Catch-all for unmatched API routes to ensure they return JSON instead of HTML
+  app.all('/api/*', (req, res) => {
+    console.log(`Unmatched API request: ${req.method} ${req.url}`);
+    res.status(404).json({ error: `API route not found: ${req.method} ${req.url}` });
+  });
+
+  // Global error handler for API routes
+  app.use('/api', (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('API Error:', err);
+    res.status(err.status || 500).json({
+      error: err.message || 'Internal Server Error',
+      code: err.code
+    });
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { 
+        middlewareMode: true,
+        hmr: false // Explicitly disable HMR to prevent websocket connection errors
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

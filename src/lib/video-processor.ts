@@ -126,13 +126,15 @@ export async function assembleVideo(
   return new Promise((resolve, reject) => {
     let command = ffmpeg();
 
-    // Robust path escaping for FFmpeg filtergraph on Windows
+    // Robust path escaping for FFmpeg filtergraph
+    // On Linux, absolute paths starting with / are fine, but for the subtitles filter, 
+    // we should wrap in single quotes and escape those single quotes.
     const escapedSubtitlePath = subtitlePath
       .replace(/\\/g, '/')
-      .replace(/:/g, '\\:')
-      .replace(/ /g, '\\ ');
+      .replace(/'/g, "'\\\\\\''")
+      .replace(/:/g, '\\:');
 
-    const vfSubtitles = `subtitles=${escapedSubtitlePath}`;
+    const vfSubtitles = `subtitles='${escapedSubtitlePath}'`;
 
     if (sceneVideoPaths.length > 0) {
       sceneVideoPaths.forEach((v) => {
@@ -144,11 +146,11 @@ export async function assembleVideo(
 
       let filterComplex =
         sceneVideoPaths.map((_, i) =>
-          `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,format=yuv420p[v${i}]`
+          `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=30,format=yuv420p[v${i}]`
         ).join(';')
         + ';'
         + sceneVideoPaths.map((_, i) => `[v${i}]`).join('')
-        + `concat=n=${sceneVideoPaths.length}:v=1:a=0[cv];[cv]tpad=stop_mode=clone:stop_duration=1000,${vfSubtitles}[outv]`;
+        + `concat=n=${sceneVideoPaths.length}:v=1:a=0[cv];[cv]tpad=stop_mode=clone:stop_duration=600,${vfSubtitles}[outv]`;
 
       command.input(audioPath);
 
@@ -175,7 +177,7 @@ export async function assembleVideo(
     } else if (videoPath) {
       command.input(videoPath).inputOptions(['-stream_loop', '-1']).input(audioPath);
 
-      let filterComplex = `[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,format=yuv420p,${vfSubtitles}[v]`;
+      let filterComplex = `[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=30,format=yuv420p,${vfSubtitles}[v]`;
 
       if (musicPath) {
         command.input(musicPath);
@@ -202,7 +204,7 @@ export async function assembleVideo(
       const durationPerImage = audioDuration / imagePaths.length;
 
       imagePaths.forEach((img) => {
-        command.input(img).inputOptions(['-loop 1', `-t ${durationPerImage}`]);
+        command.input(img).inputOptions(['-loop', '1', '-t', durationPerImage.toString()]);
       });
 
       const audioIndex = imagePaths.length;
@@ -210,7 +212,7 @@ export async function assembleVideo(
 
       let filterComplex =
         imagePaths.map((_, i) =>
-          `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,format=yuv420p[v${i}]`
+          `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=30,format=yuv420p[v${i}]`
         ).join(';')
         + ';'
         + imagePaths.map((_, i) => `[v${i}]`).join('')

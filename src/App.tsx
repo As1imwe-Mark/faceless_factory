@@ -73,9 +73,41 @@ export default function App() {
   const videoInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
+  const safeFetchJson = async (url: string, options?: RequestInit) => {
+    const fetchOptions = {
+      ...options,
+      credentials: 'include' as RequestCredentials
+    };
+    const res = await fetch(url, fetchOptions);
+    
+    if (res.url.includes('__cookie_check.html')) {
+      throw new Error('Authentication required. Please open the app in a new tab to continue, or refresh the page.');
+    }
+
+    const contentType = res.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      return res.json();
+    }
+    const text = await res.text();
+    console.error(`Expected JSON from ${url} but got ${contentType}. Final URL after redirects: ${res.url}. Response preview:`, text.substring(0, 100));
+    throw new Error(`Server returned non-JSON response for ${url} (Final URL: ${res.url}): ${res.status} ${res.statusText}`);
+  };
+
   useEffect(() => {
-    const newSocket = io();
-    setSocket(newSocket);
+    const newSocket = io({
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 5,
+      timeout: 10000,
+    });
+    
+    newSocket.on('connect', () => {
+      console.log('Socket connected:', newSocket.id);
+      setSocket(newSocket);
+    });
+
+    newSocket.on('connect_error', (err) => {
+      console.error('Socket connection error:', err);
+    });
 
     newSocket.on('job-update', (updatedJob: Job) => {
       setJobs(prev => {
@@ -96,9 +128,9 @@ export default function App() {
       setSelectedJob(prev => prev?.id === deletedId ? null : prev);
     });
 
-    fetch('/api/jobs')
-      .then(res => res.json())
-      .then(setJobs);
+    safeFetchJson('/api/jobs')
+      .then(setJobs)
+      .catch(err => console.error('Failed to fetch jobs:', err));
 
     return () => {
       newSocket.close();
@@ -108,7 +140,7 @@ export default function App() {
   const handleDeleteJob = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
+      await safeFetchJson(`/api/jobs/${id}`, { method: 'DELETE' });
     } catch (error) {
       console.error('Failed to delete job:', error);
     }
@@ -117,30 +149,35 @@ export default function App() {
   const handleCancelJob = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
+      await safeFetchJson(`/api/jobs/${id}/cancel`, { method: 'POST' });
     } catch (error) {
       console.error('Failed to cancel job:', error);
     }
   };
 
-  const handleRetryJob = (job: Job, e: React.MouseEvent) => {
+  const handleRetryJob = async (job: Job, e: React.MouseEvent) => {
     e.stopPropagation();
-    setTopic(job.topic || '');
-    setVoice(job.voice || 'Kore');
-    setTone(job.tone || 'Inspiring');
-    if (job.script && job.script.hook) {
-      setUseCustomScript(true);
-      setCustomScript(`${job.script.hook}\n${job.script.body.join('\n')}\n${job.script.cta}`);
+    try {
+      await safeFetchJson(`/api/jobs/${job.id}/retry`, { method: 'POST' });
+    } catch (error: any) {
+      console.error('Failed to retry job on backend, falling back to form:', error);
+      // Fallback to populating the form
+      setTopic(job.topic || '');
+      setVoice(job.voice || 'Kore');
+      setTone(job.tone || 'Inspiring');
+      if (job.script && job.script.hook) {
+        setUseCustomScript(true);
+        setCustomScript(`${job.script.hook}\n${job.script.body.join('\n')}\n${job.script.cta}`);
+      }
+      setIsCreating(true);
     }
-    setIsCreating(true);
   };
 
   const searchStock = async () => {
     if (!stockQuery) return;
     setGenerationStep('Searching stock videos...');
     try {
-      const res = await fetch(`/api/stock-videos?query=${encodeURIComponent(stockQuery)}`);
-      const data = await res.json();
+      const data = await safeFetchJson(`/api/stock-videos?query=${encodeURIComponent(stockQuery)}`);
       setStockVideos(data.videos || []);
     } catch (error) {
       console.error(error);
@@ -248,6 +285,7 @@ export default function App() {
       setReviewData({
         script,
         audioBlob,
+        audioUrl: mode === 'lyrics' && !audioBlob ? musicUrl : null,
         images,
         sceneVideos,
         videoUrl: videoSource === 'youtube' ? youtubeUrl : (videoSource === 'stock' ? selectedStockVideo?.video_files[0]?.link : null),
@@ -278,6 +316,8 @@ export default function App() {
       const formData = new FormData();
       if (reviewData.audioBlob) {
         formData.append('audio', reviewData.audioBlob, 'narration.wav');
+      } else if (musicUrl && mode === 'lyrics') {
+        formData.append('audioUrl', musicUrl);
       }
       reviewData.images.forEach((blob: Blob, i: number) => {
         formData.append('images', blob, `image_${i}.png`);
@@ -306,26 +346,27 @@ export default function App() {
         formData.append('wordTimestamps', JSON.stringify(reviewData.wordTimestamps));
       }
 
-      const res = await fetch('/api/assemble', {
+      const job = await safeFetchJson('/api/assemble', {
         method: 'POST',
         body: formData,
       });
 
-      if (res.ok) {
-        setIsReviewing(false);
-        setReviewData(null);
-        setTopic('');
-        setCustomScript('');
-        setMusicUrl('');
-        setYoutubeUrl('');
-        setSelectedStockVideo(null);
-        setUploadedVideo(null);
-        setUploadedAudio(null);
-        setUploadedMusic(null);
-      } else {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to start assembly');
-      }
+      setJobs(prev => {
+        if (prev.some(j => j.id === job.id)) {
+          return prev.map(j => j.id === job.id ? job : j);
+        }
+        return [job, ...prev];
+      });
+      setIsReviewing(false);
+      setReviewData(null);
+      setTopic('');
+      setCustomScript('');
+      setMusicUrl('');
+      setYoutubeUrl('');
+      setSelectedStockVideo(null);
+      setUploadedVideo(null);
+      setUploadedAudio(null);
+      setUploadedMusic(null);
     } catch (error: any) {
       console.error(error);
       setGenerationStep(`Error: ${error.message}`);
@@ -996,11 +1037,23 @@ export default function App() {
 
                   <div>
                     <label className="text-[10px] uppercase tracking-widest text-white/40 mb-4 block">Narration Preview</label>
-                    <audio 
-                      src={URL.createObjectURL(reviewData.audioBlob)} 
-                      controls 
-                      className="w-full"
-                    />
+                    {reviewData.audioBlob ? (
+                      <audio 
+                        src={URL.createObjectURL(reviewData.audioBlob)} 
+                        controls 
+                        className="w-full"
+                      />
+                    ) : reviewData.audioUrl ? (
+                      <audio 
+                        src={reviewData.audioUrl} 
+                        controls 
+                        className="w-full"
+                      />
+                    ) : (
+                      <div className="p-4 bg-white/5 rounded-xl border border-white/5 text-center text-white/40 text-xs">
+                        No audio preview available
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1039,7 +1092,10 @@ export default function App() {
 
               <div className="p-4 sm:p-6 border-t border-white/5 bg-black/50 flex flex-col sm:flex-row gap-4">
                 <button 
-                  onClick={() => setIsReviewing(false)}
+                  onClick={() => {
+                    setIsReviewing(false);
+                    setIsCreating(true);
+                  }}
                   className="w-full sm:flex-1 py-4 bg-white/5 text-white rounded-2xl font-bold hover:bg-white/10 transition-all"
                 >
                   Reject & Edit
