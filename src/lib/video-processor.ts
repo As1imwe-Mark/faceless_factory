@@ -49,7 +49,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   let events = '';
   
   // Delay subtitles by 0.2s to sync better if they are "quicker"
-  const offset = 0.2;
+  const offset = 0;
   const wordsPerLine = isLyrics ? 3 : 5;
 
   for (let i = 0; i < words.length; i += wordsPerLine) {
@@ -73,9 +73,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       lineText += `{\\pos(${Math.floor(x)},${Math.floor(y)})}{\\fad(200,200)}`;
     }
 
-    lineWords.forEach((wordObj) => {
+    lineWords.forEach((wordObj, index) => {
       const durationCs = Math.floor((wordObj.end - wordObj.start) * 100);
-      lineText += `{\\k${durationCs}}${wordObj.word} `;
+      lineText += `{\\k${durationCs}}${wordObj.word}`;
+      
+      if (index < lineWords.length - 1) {
+        const gapCs = Math.floor((lineWords[index + 1].start - wordObj.end) * 100);
+        if (gapCs > 0) {
+          lineText += `{\\k${gapCs}} `;
+        } else {
+          lineText += ` `;
+        }
+      } else {
+        lineText += ` `;
+      }
     });
 
     events += `Dialogue: 0,${formatTime(lineStart)},${formatTime(lineEnd)},Default,,0,0,0,,${lineText.trim()}\n`;
@@ -94,7 +105,8 @@ export async function assembleVideo(
   wordTimestamps: { word: string; start: number; end: number }[] | null,
   outputDir: string,
   onProgress: (progress: number) => void,
-  isLyrics: boolean = false
+  isLyrics: boolean = false,
+  sceneVideoPaths: string[] = []
 ) {
   const outputPath = path.join(outputDir, `${jobId}.mp4`);
   const subtitlePath = path.join(outputDir, `${jobId}.${wordTimestamps ? 'ass' : 'srt'}`);
@@ -122,8 +134,46 @@ export async function assembleVideo(
 
     const vfSubtitles = `subtitles=${escapedSubtitlePath}`;
 
-    if (videoPath) {
-      command.input(videoPath).input(audioPath);
+    if (sceneVideoPaths.length > 0) {
+      sceneVideoPaths.forEach((v) => {
+        command.input(v);
+      });
+
+      const audioIndex = sceneVideoPaths.length;
+      const musicIndex = musicPath ? audioIndex + 1 : -1;
+
+      let filterComplex =
+        sceneVideoPaths.map((_, i) =>
+          `[${i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,format=yuv420p[v${i}]`
+        ).join(';')
+        + ';'
+        + sceneVideoPaths.map((_, i) => `[v${i}]`).join('')
+        + `concat=n=${sceneVideoPaths.length}:v=1:a=0[cv];[cv]tpad=stop_mode=clone:stop_duration=1000,${vfSubtitles}[outv]`;
+
+      command.input(audioPath);
+
+      if (musicPath) {
+        command.input(musicPath);
+        filterComplex += `;[${musicIndex}:a]volume=0.2[bgm];[${audioIndex}:a][bgm]amix=inputs=2:duration=first[aout]`;
+      }
+
+      command
+        .complexFilter(filterComplex)
+        .outputOptions([
+          '-map [outv]',
+          `-map ${musicPath ? '[aout]' : `${audioIndex}:a:0`}`,
+          '-c:v libx264',
+          '-preset ultrafast',
+          '-crf 28',
+          '-profile:v main',
+          '-c:a aac',
+          '-shortest',
+          '-pix_fmt yuv420p',
+          '-movflags +faststart'
+        ]);
+
+    } else if (videoPath) {
+      command.input(videoPath).inputOptions(['-stream_loop', '-1']).input(audioPath);
 
       let filterComplex = `[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,format=yuv420p,${vfSubtitles}[v]`;
 
@@ -140,9 +190,11 @@ export async function assembleVideo(
           '-c:v libx264',
           '-preset ultrafast',
           '-crf 28',
+          '-profile:v main',
           '-c:a aac',
           '-shortest',
-          '-pix_fmt yuv420p'
+          '-pix_fmt yuv420p',
+          '-movflags +faststart'
         ]);
 
     } else if (imagePaths.length > 0) {
@@ -179,9 +231,11 @@ export async function assembleVideo(
           '-c:v libx264',
           '-preset ultrafast',
           '-crf 28',
+          '-profile:v main',
           '-c:a aac',
           '-shortest',
-          '-pix_fmt yuv420p'
+          '-pix_fmt yuv420p',
+          '-movflags +faststart'
         ]);
 
     } else {
@@ -204,9 +258,11 @@ export async function assembleVideo(
           '-c:v libx264',
           '-preset ultrafast',
           '-crf 28',
+          '-profile:v main',
           '-c:a aac',
           '-shortest',
-          '-pix_fmt yuv420p'
+          '-pix_fmt yuv420p',
+          '-movflags +faststart'
         ]);
     }
 

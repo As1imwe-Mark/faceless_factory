@@ -1,6 +1,6 @@
 {
-  "name": "Faceless Video Factory",
-  "description": "Automated viral short-form video generation platform using AI for scripts, narration, and editing.",
+  "name": "Script2Anim",
+  "description": "Transform your scripts into cinematic animations using AI video generation.",
   "requestFramePermissions": [
     "camera",
     "microphone"

@@ -103,6 +103,27 @@ async function startServer() {
     }
   });
 
+  app.post('/api/jobs/:id/cancel', (req, res) => {
+    const { id } = req.params;
+    try {
+      const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as any;
+      if (!job) return res.status(404).json({ error: 'Job not found' });
+      
+      if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+        return res.status(400).json({ error: 'Job cannot be cancelled in its current state' });
+      }
+
+      db.prepare('UPDATE jobs SET status = ?, error = ? WHERE id = ?').run('cancelled', 'Job cancelled by user', id);
+      
+      const updatedJob = { ...job, status: 'cancelled', error: 'Job cancelled by user', script: JSON.parse(job.script || '{}') };
+      io.emit('job-update', updatedJob);
+      
+      res.json({ success: true, job: updatedJob });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to cancel job' });
+    }
+  });
+
   app.post('/api/jobs/:id/retry', (req, res) => {
     const { id } = req.params;
     try {
@@ -167,13 +188,17 @@ async function startServer() {
   app.post('/api/assemble', upload.fields([
     { name: 'audio', maxCount: 1 }, 
     { name: 'images', maxCount: 20 },
-    { name: 'video', maxCount: 1 }
+    { name: 'sceneVideos', maxCount: 20 },
+    { name: 'video', maxCount: 1 },
+    { name: 'music', maxCount: 1 }
   ]), async (req, res) => {
     const { topic, voice, tone, mode, script: scriptJson, musicUrl, videoUrl: remoteVideoUrl, wordTimestamps: wordTimestampsJson } = req.body;
     const files = req.files as { [fieldname: string]: Express.Multer.File[] };
     const audioFile = files['audio']?.[0];
     const imageFiles = files['images'] || [];
+    const sceneVideoFiles = files['sceneVideos'] || [];
     const uploadedVideo = files['video']?.[0];
+    const uploadedMusicFile = files['music']?.[0];
 
     if (!audioFile || !scriptJson) {
       return res.status(400).json({ error: 'Missing audio file or script data' });
@@ -204,10 +229,13 @@ async function startServer() {
     (async () => {
       try {
         let finalVideoPath = uploadedVideo?.path || null;
-        let finalMusicPath = null;
+        let finalMusicPath = uploadedMusicFile?.path || null;
 
         // Download remote video if provided (YouTube or Stock)
         if (!finalVideoPath && remoteVideoUrl) {
+          const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
+          if (currentJob?.status === 'cancelled') return;
+
           job.status = 'Downloading Video';
           db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run(job.status, job.id);
           io.emit('job-update', job);
@@ -217,7 +245,7 @@ async function startServer() {
           
           if (ytdl.validateURL(remoteVideoUrl)) {
             await new Promise<void>((resolve, reject) => {
-              ytdl(remoteVideoUrl, { quality: 'highestvideo' })
+              ytdl(remoteVideoUrl, { filter: 'audioandvideo' })
                 .pipe(fs.createWriteStream(dest))
                 .on('finish', () => resolve())
                 .on('error', reject);
@@ -230,7 +258,10 @@ async function startServer() {
         }
 
         // Download music if provided
-        if (musicUrl) {
+        if (!finalMusicPath && musicUrl) {
+          const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
+          if (currentJob?.status === 'cancelled') return;
+
           job.status = 'Downloading Music';
           db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run(job.status, job.id);
           io.emit('job-update', job);
@@ -239,17 +270,26 @@ async function startServer() {
           finalMusicPath = musicDest;
         }
 
+        const currentJobBeforeAssemble = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
+        if (currentJobBeforeAssemble?.status === 'cancelled') return;
+
         job.status = 'Assembling Video';
         job.progress = 70;
         db.prepare('UPDATE jobs SET status = ?, progress = ? WHERE id = ?').run(job.status, job.progress, job.id);
         io.emit('job-update', job);
 
         const imagePaths = imageFiles.map(f => f.path);
+        const sceneVideoPaths = sceneVideoFiles.map(f => f.path);
         await assembleVideo(jobId, script, audioFile.path, imagePaths, finalVideoPath, finalMusicPath, wordTimestamps, outputDir, (p) => {
+          const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
+          if (currentJob?.status === 'cancelled') return;
           job.progress = 70 + (p * 0.25);
           db.prepare('UPDATE jobs SET progress = ? WHERE id = ?').run(job.progress, job.id);
           io.emit('job-update', job);
-        }, isLyrics);
+        }, isLyrics, sceneVideoPaths);
+
+        const finalJobCheck = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
+        if (finalJobCheck?.status === 'cancelled') return;
 
         job.status = 'completed';
         job.progress = 100;
@@ -257,6 +297,9 @@ async function startServer() {
         db.prepare('UPDATE jobs SET status = ?, progress = ?, videoUrl = ? WHERE id = ?').run(job.status, job.progress, job.videoUrl, job.id);
         io.emit('job-update', job);
       } catch (error: any) {
+        const currentJob = db.prepare('SELECT status FROM jobs WHERE id = ?').get(job.id) as any;
+        if (currentJob?.status === 'cancelled') return;
+
         console.error("Assembly error:", error);
         job.status = 'failed';
         job.error = error.message;

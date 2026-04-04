@@ -26,7 +26,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 
-import { generateScript, generateSpeech, generateImage, generateWordTimestamps } from './lib/ai-engine';
+import { generateScript, generateSpeech, generateImage, generateWordTimestamps, generateVideo, pollVideoOperation } from './lib/ai-engine';
 
 interface Job {
   id: string;
@@ -38,6 +38,7 @@ interface Job {
   tone?: string;
   voice?: string;
   error?: string;
+  script?: any;
 }
 
 export default function App() {
@@ -53,7 +54,7 @@ export default function App() {
 
   // New states
   const [mode, setMode] = useState<'video' | 'lyrics'>('video');
-  const [videoSource, setVideoSource] = useState<'ai-images' | 'upload' | 'stock' | 'youtube'>('ai-images');
+  const [videoSource, setVideoSource] = useState<'ai-images' | 'ai-animations' | 'upload' | 'stock' | 'youtube'>('ai-images');
   const [useCustomScript, setUseCustomScript] = useState(false);
   const [customScript, setCustomScript] = useState('');
   const [musicUrl, setMusicUrl] = useState('');
@@ -63,6 +64,7 @@ export default function App() {
   const [selectedStockVideo, setSelectedStockVideo] = useState<any>(null);
   const [uploadedVideo, setUploadedVideo] = useState<File | null>(null);
   const [uploadedAudio, setUploadedAudio] = useState<File | null>(null);
+  const [uploadedMusic, setUploadedMusic] = useState<File | null>(null);
   const [isReviewing, setIsReviewing] = useState(false);
   const [reviewData, setReviewData] = useState<any>(null);
   const [generationProgress, setGenerationProgress] = useState(0);
@@ -105,11 +107,19 @@ export default function App() {
 
   const handleDeleteJob = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm('Are you sure you want to delete this job?')) return;
     try {
       await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
     } catch (error) {
       console.error('Failed to delete job:', error);
+    }
+  };
+
+  const handleCancelJob = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
+    } catch (error) {
+      console.error('Failed to cancel job:', error);
     }
   };
 
@@ -148,6 +158,14 @@ export default function App() {
     setGenerationProgress(0);
     setEstimatedTime('Calculating...');
     try {
+      // Check for API key if using animations
+      if (videoSource === 'ai-animations') {
+        const hasKey = await (window as any).aistudio.hasSelectedApiKey();
+        if (!hasKey) {
+          await (window as any).aistudio.openSelectKey();
+        }
+      }
+
       let script;
       let audioBlob: Blob | null = null;
       let wordTimestamps = null;
@@ -202,15 +220,25 @@ export default function App() {
       }
 
       let images: Blob[] = [];
-      if (videoSource === 'ai-images' || mode === 'lyrics') {
+      let sceneVideos: Blob[] = [];
+      if (videoSource === 'ai-images' || videoSource === 'ai-animations' || mode === 'lyrics') {
         setGenerationStep('Generating Visuals...');
         const prompts = script.visual_prompts || [];
         for (let i = 0; i < prompts.length; i++) {
           setGenerationStep(`Generating Visual ${i + 1}/${prompts.length}...`);
           setGenerationProgress(40 + ((i / prompts.length) * 60));
-          setEstimatedTime(`~${(prompts.length - i) * 15} seconds remaining`);
-          const imgBlob = await generateImage(prompts[i]);
-          if (imgBlob) images.push(imgBlob);
+          setEstimatedTime(`~${(prompts.length - i) * (videoSource === 'ai-animations' ? 60 : 15)} seconds remaining`);
+          
+          if (videoSource === 'ai-animations') {
+            const operation = await generateVideo(prompts[i]);
+            if (operation) {
+              const videoBlob = await pollVideoOperation(operation);
+              if (videoBlob) sceneVideos.push(videoBlob);
+            }
+          } else {
+            const imgBlob = await generateImage(prompts[i]);
+            if (imgBlob) images.push(imgBlob);
+          }
         }
       }
 
@@ -221,6 +249,7 @@ export default function App() {
         script,
         audioBlob,
         images,
+        sceneVideos,
         videoUrl: videoSource === 'youtube' ? youtubeUrl : (videoSource === 'stock' ? selectedStockVideo?.video_files[0]?.link : null),
         uploadedVideo,
         wordTimestamps
@@ -229,7 +258,9 @@ export default function App() {
       setIsCreating(false);
     } catch (error: any) {
       console.error(error);
-      alert(error.message);
+      setGenerationStep(`Error: ${error.message}`);
+      // Keep the error visible for a few seconds
+      await new Promise(resolve => setTimeout(resolve, 3000));
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
@@ -251,6 +282,11 @@ export default function App() {
       reviewData.images.forEach((blob: Blob, i: number) => {
         formData.append('images', blob, `image_${i}.png`);
       });
+      if (reviewData.sceneVideos) {
+        reviewData.sceneVideos.forEach((blob: Blob, i: number) => {
+          formData.append('sceneVideos', blob, `scene_${i}.mp4`);
+        });
+      }
       if (reviewData.uploadedVideo) {
         formData.append('video', reviewData.uploadedVideo);
       }
@@ -263,6 +299,9 @@ export default function App() {
       formData.append('mode', mode);
       formData.append('script', JSON.stringify(reviewData.script));
       formData.append('musicUrl', musicUrl);
+      if (uploadedMusic) {
+        formData.append('music', uploadedMusic);
+      }
       if (reviewData.wordTimestamps) {
         formData.append('wordTimestamps', JSON.stringify(reviewData.wordTimestamps));
       }
@@ -282,12 +321,15 @@ export default function App() {
         setSelectedStockVideo(null);
         setUploadedVideo(null);
         setUploadedAudio(null);
+        setUploadedMusic(null);
       } else {
         const data = await res.json();
         throw new Error(data.error || 'Failed to start assembly');
       }
     } catch (error: any) {
-      alert(error.message);
+      console.error(error);
+      setGenerationStep(`Error: ${error.message}`);
+      await new Promise(resolve => setTimeout(resolve, 3000));
     } finally {
       setIsGenerating(false);
       setGenerationStep('');
@@ -353,169 +395,172 @@ export default function App() {
           ))}
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
-          {/* Left: Jobs List */}
-          <div className="lg:col-span-2 space-y-6">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xl font-semibold">Active Productions</h3>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <AnimatePresence mode="popLayout">
-                {jobs.map((job) => (
-                  <motion.div
-                    key={job.id}
-                    layout
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    onClick={() => setSelectedJob(job)}
-                    className={cn(
-                      "group relative bg-white/5 border rounded-2xl overflow-hidden transition-all cursor-pointer",
-                      selectedJob?.id === job.id ? "border-purple-500 ring-1 ring-purple-500" : "border-white/5 hover:border-white/20"
-                    )}
-                  >
-                    <div className="aspect-video bg-neutral-900 relative overflow-hidden">
-                      {job.status === 'completed' ? (
-                        <video src={job.videoUrl} className="w-full h-full object-cover" />
-                      ) : job.status === 'failed' ? (
-                        <div className="absolute inset-0 flex items-center justify-center bg-red-500/10">
-                          <AlertCircle className="w-8 h-8 text-red-500" />
-                        </div>
-                      ) : (
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          <div className="w-12 h-12 border-4 border-purple-500/20 border-t-purple-500 rounded-full animate-spin" />
-                        </div>
-                      )}
-                      <div className="absolute top-3 right-3">
-                        <span className={cn(
-                          "text-[10px] px-2 py-1 rounded-md uppercase font-bold tracking-wider backdrop-blur-md",
-                          job.status === 'completed' ? "bg-green-500/20 text-green-400 border border-green-500/20" : 
-                          job.status === 'failed' ? "bg-red-500/20 text-red-400 border border-red-500/20" :
-                          "bg-purple-500/20 text-purple-400 border border-purple-500/20"
-                        )}>
-                          {job.status}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="p-4">
-                      <h4 className="font-medium mb-1 line-clamp-1">{job.topic}</h4>
-                      <div className="flex items-center justify-between text-xs text-white/40 mb-3">
-                        <span>{new Date(job.createdAt).toLocaleTimeString()}</span>
-                        <span>{job.progress}%</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button 
-                          onClick={(e) => handleRetryJob(job, e)}
-                          className="flex-1 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1"
-                        >
-                          <RefreshCw className="w-3 h-3" /> Retry
-                        </button>
-                        <button 
-                          onClick={(e) => handleDeleteJob(job.id, e)}
-                          className="flex-1 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1"
-                        >
-                          <Trash2 className="w-3 h-3" /> Delete
-                        </button>
-                      </div>
-                    </div>
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-              {jobs.length === 0 && (
-                <div className="col-span-full py-20 text-center border-2 border-dashed border-white/5 rounded-3xl">
-                  <p className="text-white/20">No active productions. Start by creating a new video.</p>
-                </div>
-              )}
-            </div>
+        <div className="max-w-4xl mx-auto space-y-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xl font-semibold">Active Productions</h3>
           </div>
 
-          {/* Right: Inspector */}
-          <div className="lg:col-span-1">
-            <div className="lg:sticky lg:top-28 space-y-6">
-              {selectedJob ? (
-                <motion.div 
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  className="bg-white/5 border border-white/10 rounded-3xl p-6"
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <AnimatePresence mode="popLayout">
+              {jobs.map((job) => (
+                <motion.div
+                  key={job.id}
+                  layout
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className={cn(
+                    "group relative bg-white/5 border rounded-2xl overflow-hidden transition-all",
+                    selectedJob?.id === job.id ? "border-purple-500 ring-1 ring-purple-500" : "border-white/5 hover:border-white/20"
+                  )}
                 >
-                  <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-lg font-bold flex items-center gap-2">
-                      <Layout className="w-5 h-5 text-purple-500" />
-                      Production Details
-                    </h3>
-                    <button onClick={() => setSelectedJob(null)} className="p-2 hover:bg-white/10 rounded-full transition-colors">
-                      <X className="w-5 h-5" />
-                    </button>
-                  </div>
-                  
-                  <div className="space-y-6">
-                    <div className="aspect-[9/16] w-full max-w-[240px] mx-auto bg-black rounded-2xl overflow-hidden shadow-2xl border border-white/10 relative">
-                      {selectedJob.status === 'completed' ? (
-                        <video src={selectedJob.videoUrl} controls className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full flex flex-col items-center justify-center text-white/20 text-sm text-center p-6 gap-4">
-                          <div className="w-12 h-12 border-2 border-white/10 border-t-white/40 rounded-full animate-spin" />
-                          Preview will be available once generation completes
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="space-y-4">
-                      <div className="p-4 bg-white/5 rounded-xl border border-white/5">
-                        <label className="text-[10px] uppercase tracking-widest text-white/40 mb-2 block">Current Status</label>
-                        <div className="flex items-center gap-3">
-                          <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
-                            <motion.div 
-                              initial={{ width: 0 }}
-                              animate={{ width: `${selectedJob.progress}%` }}
-                              className={cn("h-full", selectedJob.status === 'failed' ? "bg-red-500" : "bg-purple-500")}
-                            />
-                          </div>
-                          <span className="text-sm font-mono">{selectedJob.progress}%</span>
-                        </div>
-                        <p className={cn("text-xs mt-2 font-medium", selectedJob.status === 'failed' ? "text-red-400" : "text-purple-400")}>
-                          {selectedJob.status}
-                        </p>
-                      </div>
-
-                      <div className="p-4 bg-white/5 rounded-xl border border-white/5">
-                        <label className="text-[10px] uppercase tracking-widest text-white/40 mb-2 block">Metadata</label>
-                        <div className="grid grid-cols-2 gap-4 text-xs">
-                          <div>
-                            <p className="text-white/40">Tone</p>
-                            <p className="capitalize">{selectedJob.tone || 'Inspiring'}</p>
-                          </div>
-                          <div>
-                            <p className="text-white/40">Voice</p>
-                            <p className="capitalize">{selectedJob.voice || 'Kore'}</p>
-                          </div>
-                        </div>
-                      </div>
-
-                      {selectedJob.status === 'completed' && (
-                        <a 
-                          href={`/api/download/${selectedJob.id}`} 
-                          download 
-                          className="w-full py-3 bg-white text-black rounded-xl font-bold hover:bg-white/90 transition-all flex items-center justify-center gap-2"
+                  <div className="aspect-video bg-neutral-900 relative overflow-hidden group/video">
+                    {job.status === 'completed' ? (
+                      <>
+                        <video 
+                          id={`video-${job.id}`}
+                          src={job.videoUrl} 
+                          className="w-full h-full object-cover" 
+                          controls 
+                          playsInline 
+                        />
+                        <div 
+                          className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover/video:opacity-100 transition-opacity pointer-events-none"
                         >
-                          <Download className="w-4 h-4" />
-                          Download Final Render
+                          <div className="w-16 h-16 bg-purple-500/80 backdrop-blur-sm rounded-full flex items-center justify-center text-white shadow-xl">
+                            <Play className="w-8 h-8 ml-1" />
+                          </div>
+                        </div>
+                      </>
+                    ) : job.status === 'failed' ? (
+                      <div className="absolute inset-0 flex items-center justify-center bg-red-500/10">
+                        <AlertCircle className="w-8 h-8 text-red-500" />
+                      </div>
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="w-12 h-12 border-4 border-purple-500/20 border-t-purple-500 rounded-full animate-spin" />
+                      </div>
+                    )}
+                    <div className="absolute top-3 right-3">
+                      <span className={cn(
+                        "text-[10px] px-2 py-1 rounded-md uppercase font-bold tracking-wider backdrop-blur-md",
+                        job.status === 'completed' ? "bg-green-500/20 text-green-400 border border-green-500/20" : 
+                        job.status === 'failed' ? "bg-red-500/20 text-red-400 border border-red-500/20" :
+                        "bg-purple-500/20 text-purple-400 border border-purple-500/20"
+                      )}>
+                        {job.status}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="p-4">
+                    <h4 className="font-medium mb-1 line-clamp-1">{job.topic}</h4>
+                    <div className="flex items-center justify-between text-xs text-white/40 mb-4">
+                      <span>{new Date(job.createdAt).toLocaleTimeString()}</span>
+                      <span>{job.progress}%</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button 
+                        onClick={() => setSelectedJob(selectedJob?.id === job.id ? null : job)}
+                        className="flex-1 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1"
+                      >
+                        <Layout className="w-3 h-3" /> {selectedJob?.id === job.id ? 'Hide Details' : 'View Details'}
+                      </button>
+                      {job.status === 'completed' && (
+                        <a 
+                          href={job.videoUrl} 
+                          download={`production_${job.id}.mp4`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex-1 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1"
+                        >
+                          <Download className="w-3 h-3" /> Download
                         </a>
                       )}
+                      <button 
+                        onClick={(e) => handleRetryJob(job, e)}
+                        className="flex-1 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1"
+                      >
+                        <RefreshCw className="w-3 h-3" /> Retry
+                      </button>
+                      {job.status !== 'completed' && job.status !== 'failed' && job.status !== 'cancelled' && (
+                        <button 
+                          onClick={(e) => handleCancelJob(job.id, e)}
+                          className="flex-1 py-1.5 bg-orange-500/10 hover:bg-orange-500/20 text-orange-400 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1"
+                        >
+                          <X className="w-3 h-3" /> Cancel
+                        </button>
+                      )}
+                      <button 
+                        onClick={(e) => handleDeleteJob(job.id, e)}
+                        className="flex-1 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1"
+                      >
+                        <Trash2 className="w-3 h-3" /> Delete
+                      </button>
                     </div>
+
+                    <AnimatePresence>
+                      {selectedJob?.id === job.id && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="pt-4 mt-4 border-t border-white/10 space-y-4">
+                            <div className="p-3 bg-white/5 rounded-xl border border-white/5">
+                              <label className="text-[10px] uppercase tracking-widest text-white/40 mb-2 block">Current Status</label>
+                              <div className="flex items-center gap-3">
+                                <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                                  <motion.div 
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${job.progress}%` }}
+                                    className={cn("h-full", job.status === 'failed' ? "bg-red-500" : "bg-purple-500")}
+                                  />
+                                </div>
+                                <span className="text-sm font-mono">{job.progress}%</span>
+                              </div>
+                              <p className={cn("text-xs mt-2 font-medium", job.status === 'failed' ? "text-red-400" : "text-purple-400")}>
+                                {job.status}
+                              </p>
+                            </div>
+                            <div className="p-3 bg-white/5 rounded-xl border border-white/5">
+                              <label className="text-[10px] uppercase tracking-widest text-white/40 mb-2 block">Metadata</label>
+                              <div className="grid grid-cols-2 gap-4 text-xs mb-3">
+                                <div>
+                                  <p className="text-white/40">Tone</p>
+                                  <p className="capitalize">{job.tone || 'Inspiring'}</p>
+                                </div>
+                                <div>
+                                  <p className="text-white/40">Voice</p>
+                                  <p className="capitalize">{job.voice || 'Kore'}</p>
+                                </div>
+                              </div>
+                              {job.script?.hashtags && job.script.hashtags.length > 0 && (
+                                <div>
+                                  <p className="text-[10px] uppercase tracking-widest text-white/40 mb-2">Viral Hashtags</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {job.script.hashtags.map((tag: string, i: number) => (
+                                      <span key={i} className="px-2 py-1 bg-purple-500/10 text-purple-400 rounded-md text-[10px] font-medium border border-purple-500/20">
+                                        {tag}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
                 </motion.div>
-              ) : (
-                <div className="h-[400px] border-2 border-dashed border-white/5 rounded-3xl flex flex-col items-center justify-center text-center p-8">
-                  <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mb-4">
-                    <Play className="w-8 h-8 text-white/20" />
-                  </div>
-                  <h4 className="text-white/40 font-medium">Select a project to view details</h4>
-                  <p className="text-white/20 text-sm mt-2">Real-time production monitoring and preview will appear here.</p>
-                </div>
-              )}
-            </div>
+              ))}
+            </AnimatePresence>
+            {jobs.length === 0 && (
+              <div className="col-span-full py-20 text-center border-2 border-dashed border-white/5 rounded-3xl">
+                <p className="text-white/20">No active productions. Start by creating a new video.</p>
+              </div>
+            )}
           </div>
         </div>
       </main>
@@ -673,9 +718,10 @@ export default function App() {
                         <Layout className="w-4 h-4" />
                         Visual Source
                       </label>
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4">
                         {[
                           { id: 'ai-images', label: 'AI Images', icon: Sparkles },
+                          { id: 'ai-animations', label: 'AI Animation', icon: Video },
                           { id: 'upload', label: 'Upload', icon: Upload },
                           { id: 'stock', label: 'Stock', icon: Search },
                           { id: 'youtube', label: 'YouTube', icon: Youtube },
@@ -799,13 +845,52 @@ export default function App() {
                           <Music className="w-4 h-4" />
                           Background Music
                         </label>
-                        <input 
-                          type="text"
-                          value={musicUrl}
-                          onChange={(e) => setMusicUrl(e.target.value)}
-                          placeholder="Direct Audio URL (optional)..."
-                          className="w-full bg-white/5 border border-white/10 rounded-xl p-3 focus:outline-none focus:border-purple-500/50"
-                        />
+                        <div className="space-y-3">
+                          <div 
+                            onClick={() => {
+                              const input = document.createElement('input');
+                              input.type = 'file';
+                              input.accept = 'audio/*';
+                              input.onchange = (e: any) => {
+                                if (e.target.files?.[0]) {
+                                  setUploadedMusic(e.target.files[0]);
+                                  setMusicUrl('');
+                                }
+                              };
+                              input.click();
+                            }}
+                            className="flex items-center justify-center w-full p-4 border-2 border-dashed border-white/10 rounded-xl hover:border-purple-500/50 hover:bg-purple-500/5 transition-all cursor-pointer group"
+                          >
+                            {uploadedMusic ? (
+                              <div className="flex items-center gap-2 text-purple-400">
+                                <CheckCircle2 className="w-5 h-5" />
+                                <span className="text-sm truncate max-w-[200px]">{uploadedMusic.name}</span>
+                              </div>
+                            ) : (
+                              <div className="flex flex-col items-center gap-2">
+                                <Upload className="w-6 h-6 text-white/40 group-hover:text-purple-400 transition-colors" />
+                                <span className="text-sm text-white/60 group-hover:text-white transition-colors">
+                                  Upload Audio File
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-4">
+                            <div className="h-[1px] flex-1 bg-white/10"></div>
+                            <span className="text-xs text-white/40 font-medium uppercase tracking-wider">OR</span>
+                            <div className="h-[1px] flex-1 bg-white/10"></div>
+                          </div>
+                          <input 
+                            type="text"
+                            value={musicUrl}
+                            onChange={(e) => {
+                              setMusicUrl(e.target.value);
+                              if (e.target.value) setUploadedMusic(null);
+                            }}
+                            placeholder="Direct Audio URL (optional)..."
+                            className="w-full bg-white/5 border border-white/10 rounded-xl p-3 focus:outline-none focus:border-purple-500/50"
+                          />
+                        </div>
                       </div>
                     </div>
                   )}
@@ -922,11 +1007,16 @@ export default function App() {
                 <div className="space-y-8">
                   <div>
                     <label className="text-[10px] uppercase tracking-widest text-white/40 mb-4 block">Visual Assets</label>
-                    {reviewData.images.length > 0 ? (
+                    {reviewData.images.length > 0 || (reviewData.sceneVideos && reviewData.sceneVideos.length > 0) ? (
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                         {reviewData.images.map((blob: Blob, i: number) => (
                           <div key={i} className="aspect-[9/16] bg-black rounded-xl overflow-hidden border border-white/10">
                             <img src={URL.createObjectURL(blob)} className="w-full h-full object-cover" />
+                          </div>
+                        ))}
+                        {reviewData.sceneVideos?.map((blob: Blob, i: number) => (
+                          <div key={`v-${i}`} className="aspect-[9/16] bg-black rounded-xl overflow-hidden border border-white/10">
+                            <video src={URL.createObjectURL(blob)} className="w-full h-full object-cover" autoPlay muted loop />
                           </div>
                         ))}
                       </div>
