@@ -26,13 +26,14 @@ export function generateSRT(script: any, totalDuration: number) {
 }
 
 export function generateASS(words: { word: string; start: number; end: number }[], totalDuration: number, isLyrics: boolean = false) {
-  const fontSize = isLyrics ? 48 : 36;
-  const alignment = isLyrics ? 5 : 2; // 5 is middle center, 2 is bottom center
-  const primaryColor = '&H00FFFFFF'; // White
-  const secondaryColor = '&H0000FFFF'; // Yellow for highlight
+  const fontSize = isLyrics ? 72 : 54;
+  const alignment = 5; // 5 is middle center
+  const primaryColor = '&H0000FFFF'; // Yellow for highlight (hit color)
+  const secondaryColor = '&H00FFFFFF'; // White for base (un-hit color)
+  const outlineColor = '&H00000000'; // Black outline
   
   const header = `[Script Info]
-Title: Word Highlighting Subtitles
+Title: Karaoke Style Subtitles
 ScriptType: v4.00+
 PlayResX: 720
 PlayResY: 1280
@@ -40,7 +41,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,${fontSize},${primaryColor},${secondaryColor},&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,2,${alignment},10,10,100,1
+Style: Default,Arial,${fontSize},${primaryColor},${secondaryColor},${outlineColor},&H00000000,1,0,0,0,100,100,0,0,1,3,2,${alignment},10,10,10,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -48,14 +49,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
   let events = '';
   
-  // Delay subtitles by 0.2s to sync better if they are "quicker"
   const offset = 0;
-  const wordsPerLine = isLyrics ? 3 : 5;
+  const wordsPerLine = isLyrics ? 5 : 6; // More words per line to "slow down" transitions
 
   for (let i = 0; i < words.length; i += wordsPerLine) {
     const lineWords = words.slice(i, i + wordsPerLine);
     const lineStart = Math.max(0, lineWords[0].start + offset);
-    const lineEnd = Math.min(totalDuration, lineWords[lineWords.length - 1].end + offset);
+    const lineEnd = Math.min(totalDuration, lineWords[lineWords.length - 1].end + offset + 0.8); // Stay longer
 
     const formatTime = (seconds: number) => {
       const h = Math.floor(seconds / 3600);
@@ -65,14 +65,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}`;
     };
 
-    let lineText = '';
-    if (isLyrics) {
-      // Randomize position for lyrics
-      const x = 360 + (Math.random() - 0.5) * 100;
-      const y = 640 + (Math.random() - 0.5) * 400;
-      lineText += `{\\pos(${Math.floor(x)},${Math.floor(y)})}{\\fad(200,200)}`;
-    }
-
+    let lineText = '{\\fad(400,400)}'; // Smoother fade
+    
     lineWords.forEach((wordObj, index) => {
       const durationCs = Math.floor((wordObj.end - wordObj.start) * 100);
       lineText += `{\\k${durationCs}}${wordObj.word}`;
@@ -84,8 +78,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         } else {
           lineText += ` `;
         }
-      } else {
-        lineText += ` `;
       }
     });
 
@@ -150,7 +142,7 @@ export async function assembleVideo(
         ).join(';')
         + ';'
         + sceneVideoPaths.map((_, i) => `[v${i}]`).join('')
-        + `concat=n=${sceneVideoPaths.length}:v=1:a=0[cv];[cv]tpad=stop_mode=clone:stop_duration=600,${vfSubtitles}[outv]`;
+        + `concat=n=${sceneVideoPaths.length}:v=1:a=0[cv];[cv]tpad=stop_mode=clone:stop_duration=${Math.ceil(audioDuration)},${vfSubtitles}[outv]`;
 
       command.input(audioPath);
 
@@ -165,10 +157,12 @@ export async function assembleVideo(
           '-map [outv]',
           `-map ${musicPath ? '[aout]' : `${audioIndex}:a:0`}`,
           '-c:v libx264',
-          '-preset ultrafast',
-          '-crf 28',
-          '-profile:v main',
+          '-preset fast',
+          '-crf 23',
+          '-profile:v high',
+          '-level 4.1',
           '-c:a aac',
+          '-b:a 192k',
           '-shortest',
           '-pix_fmt yuv420p',
           '-movflags +faststart'
@@ -190,10 +184,12 @@ export async function assembleVideo(
           '-map [v]',
           `-map ${musicPath ? '[aout]' : '1:a'}`,
           '-c:v libx264',
-          '-preset ultrafast',
-          '-crf 28',
-          '-profile:v main',
+          '-preset fast',
+          '-crf 23',
+          '-profile:v high',
+          '-level 4.1',
           '-c:a aac',
+          '-b:a 192k',
           '-shortest',
           '-pix_fmt yuv420p',
           '-movflags +faststart'
@@ -231,10 +227,12 @@ export async function assembleVideo(
           '-map [outv]',
           `-map ${musicPath ? '[aout]' : `${audioIndex}:a:0`}`,
           '-c:v libx264',
-          '-preset ultrafast',
-          '-crf 28',
-          '-profile:v main',
+          '-preset fast',
+          '-crf 23',
+          '-profile:v high',
+          '-level 4.1',
           '-c:a aac',
+          '-b:a 192k',
           '-shortest',
           '-pix_fmt yuv420p',
           '-movflags +faststart'
@@ -258,10 +256,12 @@ export async function assembleVideo(
           '-map [v]',
           `-map ${musicPath ? '[aout]' : '1:a'}`,
           '-c:v libx264',
-          '-preset ultrafast',
-          '-crf 28',
-          '-profile:v main',
+          '-preset fast',
+          '-crf 23',
+          '-profile:v high',
+          '-level 4.1',
           '-c:a aac',
+          '-b:a 192k',
           '-shortest',
           '-pix_fmt yuv420p',
           '-movflags +faststart'
