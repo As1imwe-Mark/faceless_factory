@@ -11,6 +11,7 @@ import { createClient } from 'pexels';
 import ytdl from 'ytdl-core';
 import Database from 'better-sqlite3';
 import dotenv from 'dotenv';
+import cors from 'cors';
 import { generateSRT, assembleVideo, downloadFile } from './src/lib/video-processor.js';
 
 dotenv.config();
@@ -86,6 +87,10 @@ async function startServer() {
   const PORT = 3000;
 
   // 1. Debug middleware - move to the very top
+  app.use(cors({
+    origin: true,
+    credentials: true
+  }));
   app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
     next();
