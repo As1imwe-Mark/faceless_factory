@@ -78,7 +78,8 @@ async function startServer() {
   const httpServer = createServer(app);
   const io = new Server(httpServer, {
     cors: {
-      origin: "*",
+      origin: true, // Reflect request origin
+      credentials: true
     }
   });
 

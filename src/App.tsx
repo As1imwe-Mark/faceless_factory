@@ -21,7 +21,8 @@ import {
   X,
   Music2,
   RefreshCw,
-  Trash2
+  Trash2,
+  ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -73,31 +74,61 @@ export default function App() {
   const videoInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
+  const [isAuthError, setIsAuthError] = useState(false);
+
+  const checkSession = async () => {
+    try {
+      const res = await fetch('/api/jobs', { credentials: 'include' });
+      if (res.url.includes('__cookie_check.html')) {
+        setIsAuthError(true);
+        return false;
+      }
+      return true;
+    } catch (e) {
+      console.error('Session check failed:', e);
+      return false;
+    }
+  };
+
   const safeFetchJson = async (url: string, options?: RequestInit) => {
     const fetchOptions = {
       ...options,
       credentials: 'include' as RequestCredentials
     };
-    const res = await fetch(url, fetchOptions);
     
-    if (res.url.includes('__cookie_check.html')) {
-      throw new Error('Authentication required. Please open the app in a new tab to continue, or refresh the page.');
-    }
+    try {
+      const res = await fetch(url, fetchOptions);
+      
+      if (res.url.includes('__cookie_check.html')) {
+        setIsAuthError(true);
+        throw new Error('Authentication required. Please click the button below to refresh your session.');
+      }
 
-    const contentType = res.headers.get('content-type');
-    if (contentType && contentType.includes('application/json')) {
-      return res.json();
+      const contentType = res.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        return res.json();
+      }
+      
+      if (!res.ok) {
+        const text = await res.text();
+        console.error(`Expected JSON from ${url} but got ${contentType}. Final URL after redirects: ${res.url}. Response preview:`, text.substring(0, 100));
+        throw new Error(`Server returned non-JSON response for ${url} (Final URL: ${res.url}): ${res.status} ${res.statusText}`);
+      }
+      
+      return await res.json();
+    } catch (error: any) {
+      console.error(`Fetch error for ${url}:`, error);
+      throw error;
     }
-    const text = await res.text();
-    console.error(`Expected JSON from ${url} but got ${contentType}. Final URL after redirects: ${res.url}. Response preview:`, text.substring(0, 100));
-    throw new Error(`Server returned non-JSON response for ${url} (Final URL: ${res.url}): ${res.status} ${res.statusText}`);
   };
 
   useEffect(() => {
+    checkSession();
     const newSocket = io({
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'],
       reconnectionAttempts: 5,
       timeout: 10000,
+      withCredentials: true,
     });
     
     newSocket.on('connect', () => {
@@ -195,6 +226,12 @@ export default function App() {
     setGenerationProgress(0);
     setEstimatedTime('Calculating...');
     try {
+      // Check session first
+      const sessionOk = await checkSession();
+      if (!sessionOk) {
+        throw new Error('Session expired. Please refresh your authentication.');
+      }
+
       // Check for API key if using animations
       if (videoSource === 'ai-animations') {
         const hasKey = await (window as any).aistudio.hasSelectedApiKey();
@@ -313,6 +350,12 @@ export default function App() {
     setGenerationStep('Starting Assembly...');
     
     try {
+      // Check session first
+      const sessionOk = await checkSession();
+      if (!sessionOk) {
+        throw new Error('Session expired. Please refresh your authentication.');
+      }
+
       const formData = new FormData();
       if (reviewData.audioBlob) {
         formData.append('audio', reviewData.audioBlob, 'narration.wav');
@@ -1113,6 +1156,51 @@ export default function App() {
                       Approve & Start Assembly
                     </>
                   )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      {/* Auth Error Modal */}
+      <AnimatePresence>
+        {isAuthError && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-black/95 backdrop-blur-xl"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-[#111] border border-red-500/20 rounded-3xl p-8 text-center shadow-2xl"
+            >
+              <div className="w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
+                <AlertCircle className="w-10 h-10 text-red-500" />
+              </div>
+              <h3 className="text-2xl font-bold mb-4">Session Expired</h3>
+              <p className="text-white/60 mb-8 leading-relaxed">
+                Your authentication session has expired. To continue, please refresh your session by clicking the button below.
+              </p>
+              <div className="space-y-4">
+                <button 
+                  onClick={() => {
+                    window.open(window.location.origin, '_blank');
+                    setIsAuthError(false);
+                  }}
+                  className="w-full py-4 bg-white text-black rounded-2xl font-bold hover:bg-white/90 transition-all flex items-center justify-center gap-2"
+                >
+                  <ExternalLink className="w-5 h-5" />
+                  Refresh Session
+                </button>
+                <button 
+                  onClick={() => setIsAuthError(false)}
+                  className="w-full py-3 text-white/40 hover:text-white transition-colors text-sm"
+                >
+                  Close
                 </button>
               </div>
             </motion.div>
