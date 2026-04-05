@@ -621,7 +621,7 @@ export default function App() {
                               </div>
                               {job.script?.hashtags && job.script.hashtags.length > 0 && (
                                 <div>
-                                  <p className="text-[10px] uppercase tracking-widest text-white/40 mb-2">Viral Hashtags</p>
+                                  <p className="text-[10px] uppercase tracking-widest text-white/40 mb-2">7 Viral Hashtags</p>
                                   <div className="flex flex-wrap gap-1.5">
                                     {job.script.hashtags.map((tag: string, i: number) => (
                                       <span key={i} className="px-2 py-1 bg-purple-500/10 text-purple-400 rounded-md text-[10px] font-medium border border-purple-500/20">
@@ -1077,6 +1077,19 @@ export default function App() {
                       <p className="text-blue-400 font-bold italic">"{reviewData.script.cta}"</p>
                     </div>
                   </div>
+
+                  {reviewData.script.hashtags && reviewData.script.hashtags.length > 0 && (
+                    <div>
+                      <label className="text-[10px] uppercase tracking-widest text-white/40 mb-4 block">Viral Hashtags</label>
+                      <div className="flex flex-wrap gap-2">
+                        {reviewData.script.hashtags.map((tag: string, i: number) => (
+                          <span key={i} className="px-3 py-1.5 bg-purple-500/10 text-purple-400 rounded-xl text-xs font-medium border border-purple-500/20">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   <div>
                     <label className="text-[10px] uppercase tracking-widest text-white/40 mb-4 block">Narration Preview</label>

@@ -106,7 +106,7 @@ export async function generateScript(topic: string, tone: string) {
   Tone: ${tone}. 
   The script should be under 60 seconds when read. 
   Include a strong hook, educational or entertaining middle, and a call to action.
-  Also generate exactly 6 viral hashtags relevant to the topic.
+  Also generate exactly 7 viral hashtags relevant to the topic.
   Format the output as JSON with the following structure:
   {
     "hook": "...",
@@ -119,7 +119,7 @@ export async function generateScript(topic: string, tone: string) {
       "...",
       "detailed prompt for cta image"
     ],
-    "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5", "#tag6"]
+    "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5", "#tag6", "#tag7"]
   }`;
 
   try {

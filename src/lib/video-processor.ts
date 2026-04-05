@@ -142,7 +142,7 @@ export async function assembleVideo(
         ).join(';')
         + ';'
         + sceneVideoPaths.map((_, i) => `[v${i}]`).join('')
-        + `concat=n=${sceneVideoPaths.length}:v=1:a=0[cv];[cv]tpad=stop_mode=clone:stop_duration=${Math.ceil(audioDuration)},${vfSubtitles}[outv]`;
+        + `concat=n=${sceneVideoPaths.length}:v=1:a=0[cv];[cv]tpad=stop_mode=clone:stop_duration=60,${vfSubtitles}[outv]`;
 
       command.input(audioPath);
 
@@ -159,12 +159,12 @@ export async function assembleVideo(
           '-c:v libx264',
           '-preset fast',
           '-crf 23',
-          '-profile:v high',
-          '-level 4.1',
+          '-profile:v main',
+          '-pix_fmt yuv420p',
+          '-r 30',
           '-c:a aac',
           '-b:a 192k',
           '-shortest',
-          '-pix_fmt yuv420p',
           '-movflags +faststart'
         ]);
 
@@ -186,12 +186,12 @@ export async function assembleVideo(
           '-c:v libx264',
           '-preset fast',
           '-crf 23',
-          '-profile:v high',
-          '-level 4.1',
+          '-profile:v main',
+          '-pix_fmt yuv420p',
+          '-r 30',
           '-c:a aac',
           '-b:a 192k',
           '-shortest',
-          '-pix_fmt yuv420p',
           '-movflags +faststart'
         ]);
 
@@ -229,12 +229,12 @@ export async function assembleVideo(
           '-c:v libx264',
           '-preset fast',
           '-crf 23',
-          '-profile:v high',
-          '-level 4.1',
+          '-profile:v main',
+          '-pix_fmt yuv420p',
+          '-r 30',
           '-c:a aac',
           '-b:a 192k',
           '-shortest',
-          '-pix_fmt yuv420p',
           '-movflags +faststart'
         ]);
 
@@ -258,12 +258,12 @@ export async function assembleVideo(
           '-c:v libx264',
           '-preset fast',
           '-crf 23',
-          '-profile:v high',
-          '-level 4.1',
+          '-profile:v main',
+          '-pix_fmt yuv420p',
+          '-r 30',
           '-c:a aac',
           '-b:a 192k',
           '-shortest',
-          '-pix_fmt yuv420p',
           '-movflags +faststart'
         ]);
     }
